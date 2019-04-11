@@ -12,44 +12,51 @@
 
 %% Types
 -export_type([config/0]).
+
+-export_type([log_level_map/0]).
+
+-type log_level_map() :: #{logger:level() => atom()}.
+
 -type config() :: #{
     exclude_meta_fields => [atom()] | exclude_all,
+    log_level_map => log_level_map(),
     message_redaction_regex_list => list()
 }.
 
 -spec format(logger:log_event(), logger:formatter_config()) -> unicode:chardata().
 
 format(#{msg := {report, _}} = Msg, Config) ->
-    [_, Data, _] = logger_formatter:format(Msg, #{template => [msg]}),
+    Data = logger_formatter:format(Msg, #{template => [msg]}),
     format(Msg#{msg => {string, Data}}, Config#{exclude_meta_fields => exclude_all});
 
 format(Msg, Config) ->
-    ExcludedFields = maps:get(exclude_meta_fields, Config, get_default_excludes()),
     Regexes = maps:get(message_redaction_regex_list, Config, []),
-    RedactedMsg = redact(get_msg_map(Msg, ExcludedFields), Regexes),
+    RedactedMsg = redact(get_msg_map(Msg, Config), Regexes),
     Encoded = jsx:encode(RedactedMsg),
-    <<Encoded/binary, "\n">>.
+    [Encoded, <<"\n">>].
 
-get_msg_map(Msg, ExcludedFields) ->
+get_msg_map(Msg, Config) ->
+    ExcludedFields = maps:get(exclude_meta_fields, Config, get_default_excludes()),
+    LogLevelMap = maps:get(log_level_map, Config, #{}),
     maps:merge(
         get_metadata(Msg, ExcludedFields),
         #{
             '@timestamp' => get_timestamp(),
-            '@severity'  => get_severity (Msg),
-            'message'    => get_message  (Msg)
+            '@severity'  => get_severity (Msg, LogLevelMap),
+            message      => get_message  (Msg)
          }
     ).
 
 -spec get_timestamp() -> binary().
 get_timestamp() ->
-    {MegaSec, Sec, MicroSec} = os:timestamp(),
-    USec = MegaSec * 1000000000000 + Sec * 1000000 + MicroSec,
-    {ok, TimeStamp} = rfc3339:format(USec, micro_seconds),
+    USec = os:system_time(microsecond),
+    {ok, TimeStamp} = rfc3339:format(USec, microsecond),
     TimeStamp.
 
--spec get_severity(logger:log_event()) -> atom().
-get_severity(Msg) ->
-    maps:get(level, Msg).
+-spec get_severity(logger:log_event(), log_level_map()) -> atom().
+get_severity(Msg, LogLevelMap) ->
+    Level = maps:get(level, Msg),
+    maps:get(Level, LogLevelMap, Level).
 
 -spec get_message(logger:log_event()) -> binary().
 get_message(Msg) ->
@@ -59,7 +66,7 @@ get_message(Msg) ->
         {string, Message} when is_binary(Message)->
             Message;
         {report, _Report} ->
-            <<"caught unexpected report">>; % there shouldn't be any reports here
+            erlang:throw({formatter_error, unexpected_report}); % there shouldn't be any reports here
         {Format, Args} ->
             unicode:characters_to_binary(io_lib:format(Format, Args), unicode)
     end.
@@ -83,9 +90,9 @@ add_meta(K, V, Map) ->
 printable({file, File}) ->
     {file, unicode:characters_to_binary(File, unicode)};
 printable({Key, Pid}) when is_pid(Pid) ->
-    {Key, pid_list(Pid)};
+    {Key, pid_to_binary(Pid)};
 printable({Key, Port}) when is_port(Port) ->
-    {Key, port_to_list(Port)};
+    {Key, erlang:port_to_list(Port)};
 printable({Key, {A, B, C} = V}) when not is_integer(A); not is_integer(B); not is_integer(C) ->
     {Key, unicode:characters_to_binary((io_lib:format("~p", [V])), unicode)};
 
@@ -98,16 +105,12 @@ printable({Key, Value}) when is_atom(Key); is_binary(Key) ->
         false -> {Key, unicode:characters_to_binary(io_lib:format("~p", [Value]), unicode)}
     end.
 
-pid_list(Pid) ->
-    try unicode:characters_to_binary(pid_to_list(Pid), unicode) of
-        Pid0 -> Pid0
-    catch error:badarg ->
-            unicode:characters_to_binary(hd(io_lib:format("~p", [Pid])), unicode)
-    end.
+pid_to_binary(Pid) ->
+    unicode:characters_to_binary(pid_to_list(Pid), unicode).
 
 %%filters
-redact(#{'message' := Message} = Msg, Regexes) ->
-    Msg#{'message' => redact_all(unicode:characters_to_binary(Message, unicode), Regexes)}.
+redact(#{message := Message} = Msg, Regexes) ->
+    Msg#{message => redact_all(unicode:characters_to_binary(Message, unicode), Regexes)}.
 
 redact_all(Message, Regexes) ->
     lists:foldl(fun redact_one/2, Message, Regexes).
