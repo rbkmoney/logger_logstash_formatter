@@ -6,7 +6,7 @@ SERVICE_NAME = dev
 UTILS_PATH := build_utils
 TEMPLATES_PATH = .
 
-BUILD_IMAGE_TAG := 10ace69bc3a1fc3179672098b7be081f9f6018b2
+BUILD_IMAGE_TAG := 7267e019e3c75e8e5ae5c9f2004960341733f829
 
 CALL_ANYWHERE := all submodules rebar-update compile lint xref test clean distclean
 
