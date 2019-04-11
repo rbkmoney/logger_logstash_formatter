@@ -18,6 +18,11 @@
 }.
 
 -spec format(logger:log_event(), logger:formatter_config()) -> unicode:chardata().
+
+format(#{msg := {report, _}} = Msg, Config) ->
+    [_, Data, _] = logger_formatter:format(Msg, #{template => [msg]}),
+    format(Msg#{msg => {string, Data}}, Config#{exclude_meta_fields => exclude_all});
+
 format(Msg, Config) ->
     ExcludedFields = maps:get(exclude_meta_fields, Config, get_default_excludes()),
     Regexes = maps:get(message_redaction_regex_list, Config, []),
@@ -46,28 +51,28 @@ get_timestamp() ->
 get_severity(Msg) ->
     maps:get(level, Msg).
 
--spec get_message(logger:log_event()) -> io_lib:chars().
+-spec get_message(logger:log_event()) -> binary().
 get_message(Msg) ->
     case maps:get(msg, Msg) of
         {string, Message} when is_list(Message)->
-            Message;
+            unicode:characters_to_binary(Message, unicode);
         {string, Message} when is_binary(Message)->
-            binary_to_list(Message);
-        {report, Report} ->
-            Report; % No report support so far, stay tuned
+            Message;
+        {report, _Report} ->
+            <<"caught unexpected report">>; % there shouldn't be any reports here
         {Format, Args} ->
-           io_lib:format(Format, Args)
+            unicode:characters_to_binary(io_lib:format(Format, Args), unicode)
     end.
 
 -spec get_metadata(logger:log_event(), [atom()]) -> logger:metadata().
 get_metadata(Msg, ExcludedFields) ->
-    Meta = case ExcludedFields of
+    case ExcludedFields of
         exclude_all ->
             #{};
         _ -> 
-            maps:without(ExcludedFields, maps:get(meta, Msg))
-    end,
-    maps:fold(fun add_meta/3, #{}, Meta).
+            Meta = maps:without(ExcludedFields, maps:get(meta, Msg)),
+            maps:fold(fun add_meta/3, #{}, Meta)
+    end.
 
 add_meta(K, V, Map) ->
     {Key, Value} = printable({K, V}),
@@ -77,8 +82,12 @@ add_meta(K, V, Map) ->
 %% of integers
 printable({file, File}) ->
     {file, unicode:characters_to_binary(File, unicode)};
-printable({pid, Pid}) ->
-    {pid, pid_list(Pid)};
+printable({Key, Pid}) when is_pid(Pid) ->
+    {Key, pid_list(Pid)};
+printable({Key, Port}) when is_port(Port) ->
+    {Key, port_to_list(Port)};
+printable({Key, {A, B, C} = V}) when not is_integer(A); not is_integer(B); not is_integer(C) ->
+    {Key, unicode:characters_to_binary((io_lib:format("~p", [V])), unicode)};
 
 %% if a value is expressable in json use it directly, otherwise
 %% try to get a printable representation and express it as a json
@@ -135,4 +144,3 @@ get_default_excludes() ->
     [time, gl, domain].
 
 % TO DO: tests
-
