@@ -13,7 +13,7 @@
 %% Types
 -export_type([config/0]).
 -type config() :: #{
-    exclude_meta_fields => [atom()],
+    exclude_meta_fields => [atom()] | exclude_all,
     message_redaction_regex_list => list()
 }.
 
@@ -46,11 +46,13 @@ get_timestamp() ->
 get_severity(Msg) ->
     maps:get(level, Msg).
 
--spec get_message(logger:log_event()) -> binary().
+-spec get_message(logger:log_event()) -> io_lib:chars().
 get_message(Msg) ->
     case maps:get(msg, Msg) of
-        {string, Message} ->
-            list_to_binary(Message);
+        {string, Message} when is_list(Message)->
+            Message;
+        {string, Message} when is_binary(Message)->
+            binary_to_list(Message);
         {report, Report} ->
             Report; % No report support so far, stay tuned
         {Format, Args} ->
@@ -59,7 +61,12 @@ get_message(Msg) ->
 
 -spec get_metadata(logger:log_event(), [atom()]) -> logger:metadata().
 get_metadata(Msg, ExcludedFields) ->
-    Meta = maps:without(ExcludedFields, maps:get(meta, Msg)),
+    Meta = case ExcludedFields of
+        exclude_all ->
+            #{};
+        _ -> 
+            maps:without(ExcludedFields, maps:get(meta, Msg))
+    end,
     maps:fold(fun add_meta/3, #{}, Meta).
 
 add_meta(K, V, Map) ->
