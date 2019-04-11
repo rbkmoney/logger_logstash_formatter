@@ -69,7 +69,7 @@ get_metadata(Msg, ExcludedFields) ->
     case ExcludedFields of
         exclude_all ->
             #{};
-        _ -> 
+        _ ->
             Meta = maps:without(ExcludedFields, maps:get(meta, Msg)),
             maps:fold(fun add_meta/3, #{}, Meta)
     end.
@@ -99,7 +99,7 @@ printable({Key, Value}) when is_atom(Key); is_binary(Key) ->
     end.
 
 pid_list(Pid) ->
-    try unicode:characters_to_binary(Pid, unicode) of
+    try unicode:characters_to_binary(pid_to_list(Pid), unicode) of
         Pid0 -> Pid0
     catch error:badarg ->
             unicode:characters_to_binary(hd(io_lib:format("~p", [Pid])), unicode)
