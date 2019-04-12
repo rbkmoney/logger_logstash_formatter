@@ -92,8 +92,10 @@ printable({file, File}) ->
 printable({Key, Pid}) when is_pid(Pid) ->
     {Key, pid_to_binary(Pid)};
 printable({Key, Port}) when is_port(Port) ->
-    {Key, erlang:port_to_list(Port)};
+    {Key, unicode:characters_to_binary(erlang:port_to_list(Port), unicode)};
 printable({Key, {A, B, C} = V}) when not is_integer(A); not is_integer(B); not is_integer(C) ->
+    % jsx:is_term treats all 3 length tuples as timestamps and fails if they are actually not
+    % so we filter tuples, that are definetly not timestamps
     {Key, unicode:characters_to_binary((io_lib:format("~p", [V])), unicode)};
 
 %% if a value is expressable in json use it directly, otherwise
@@ -110,7 +112,7 @@ pid_to_binary(Pid) ->
 
 %%filters
 redact(#{message := Message} = Msg, Regexes) ->
-    Msg#{message => redact_all(unicode:characters_to_binary(Message, unicode), Regexes)}.
+    Msg#{message => redact_all(Message, Regexes)}.
 
 redact_all(Message, Regexes) ->
     lists:foldl(fun redact_one/2, Message, Regexes).
