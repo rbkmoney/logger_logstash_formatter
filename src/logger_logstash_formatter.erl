@@ -36,10 +36,9 @@ format(Msg, Config) ->
     [Encoded, <<"\n">>].
 
 get_msg_map(Msg, Config) ->
-    ExcludedFields = maps:get(exclude_meta_fields, Config, get_default_excludes()),
     LogLevelMap = maps:get(log_level_map, Config, #{}),
     maps:merge(
-        get_metadata(Msg, ExcludedFields),
+        get_metadata(Msg, Config),
         #{
             '@timestamp' => get_timestamp(),
             '@severity'  => get_severity (Msg, LogLevelMap),
@@ -72,12 +71,19 @@ get_message(Msg) ->
     end.
 
 -spec get_metadata(logger:log_event(), [atom()]) -> logger:metadata().
-get_metadata(Msg, ExcludedFields) ->
+get_metadata(Msg, Config) ->
+    ExcludedFields = maps:get(exclude_meta_fields, Config, get_default_excludes()),
     case ExcludedFields of
         exclude_all ->
             #{};
         _ ->
-            Meta = maps:without(ExcludedFields, maps:get(meta, Msg)),
+            Meta0 = maps:without(ExcludedFields, maps:get(meta, Msg)),
+            Meta = case maps:get(message_redaction_regex_list, Config, []) of
+                [] ->
+                    Meta0;
+                Regexes ->
+                    traverse_and_redact(Meta0, Regexes)
+            end,
             maps:fold(fun add_meta/3, #{}, Meta)
     end.
 
@@ -147,5 +153,29 @@ compile_regex(Regex) ->
 
 get_default_excludes() ->
     [time, gl, domain].
+
+%% Metadata traversal
+% TO DO: Separate this to another module
+
+traverse_and_redact(Map, Regexes) when is_map(Map)->
+    F = fun (K, V, Acc) ->
+        Acc#{K => traverse_and_redact(V, Regexes)}
+    end,
+    maps:fold(F, #{}, Map);
+
+traverse_and_redact(List, Regexes) when is_list(List) ->
+    F = fun(V, Acc) ->
+        [traverse_and_redact(V, Regexes) | Acc]
+    end,
+    lists:reverse(lists:foldl(F, [], List));
+
+traverse_and_redact(Tuple, Regexes) when is_tuple(Tuple) ->
+    traverse_and_redact(tuple_to_list(Tuple), Regexes);
+
+traverse_and_redact(Binary, Regexes) when is_binary(Binary) ->
+    redact_all(Binary, Regexes);
+
+traverse_and_redact(Item, _) ->
+    Item.
 
 % TO DO: tests
