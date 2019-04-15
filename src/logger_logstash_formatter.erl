@@ -29,63 +29,73 @@ format(#{msg := {report, _}} = Msg, Config) ->
     Data = logger_formatter:format(Msg, #{template => [msg]}),
     format(Msg#{msg => {string, Data}}, Config#{exclude_meta_fields => exclude_all});
 
-format(Msg, Config) ->
-    Regexes = maps:get(message_redaction_regex_list, Config, []),
-    RedactedMsg = redact(get_msg_map(Msg, Config), Regexes),
-    Encoded = jsx:encode(RedactedMsg),
+format(Event, Config) ->
+    {Meta, TimeStamp} = get_meta_and_timestamp(Event, Config),
+    Severity  = get_severity(Event, Config),
+    Message   = get_message(Event),
+    {RedactedMsg, RedactedMeta} = redact(Message, Meta, Config),
+    PrintableMeta = meta_to_printable(RedactedMeta),
+    Formatted = create_message(RedactedMsg, Severity, TimeStamp, PrintableMeta),
+    Encoded = jsx:encode(Formatted),
     [Encoded, <<"\n">>].
 
-get_msg_map(Msg, Config) ->
+get_severity(Event, Config) ->
     LogLevelMap = maps:get(log_level_map, Config, #{}),
-    maps:merge(
-        get_metadata(Msg, Config),
-        #{
-            '@timestamp' => get_timestamp(),
-            '@severity'  => get_severity (Msg, LogLevelMap),
-            message      => get_message  (Msg)
-         }
-    ).
-
--spec get_timestamp() -> binary().
-get_timestamp() ->
-    USec = os:system_time(microsecond),
-    {ok, TimeStamp} = rfc3339:format(USec, microsecond),
-    TimeStamp.
-
--spec get_severity(logger:log_event(), log_level_map()) -> atom().
-get_severity(Msg, LogLevelMap) ->
-    Level = maps:get(level, Msg),
+    Level = maps:get(level, Event),
     maps:get(Level, LogLevelMap, Level).
 
--spec get_message(logger:log_event()) -> binary().
-get_message(Msg) ->
-    case maps:get(msg, Msg) of
-        {string, Message} when is_list(Message)->
-            unicode:characters_to_binary(Message, unicode);
-        {string, Message} when is_binary(Message)->
-            Message;
-        {report, _Report} ->
-            erlang:throw({formatter_error, unexpected_report}); % there shouldn't be any reports here
-        {Format, Args} ->
-            unicode:characters_to_binary(io_lib:format(Format, Args), unicode)
+get_meta_and_timestamp(#{meta := Meta0}, Config) ->
+    {Meta, TimeStamp} = case get_timestamp(Meta0) of
+        {error, _} ->
+            USec = os:system_time(microsecond),
+            {ok, TS} = rfc3339:format(USec, microsecond),
+            {Meta0, TS};
+        TS ->
+            % Succesfully got time from meta, can remove the field now
+            {maps:remove(time, Meta0), TS}
+        end,
+    {reduce_meta(Meta, Config), TimeStamp}.
+
+-spec get_timestamp(logger:metadata()) -> binary() | {error, no_time}.
+get_timestamp(Meta) ->
+    case maps:get(time, Meta, undefined) of
+        USec when is_integer(USec) ->
+            {ok, TimeStamp} = rfc3339:format(USec, microsecond),
+            TimeStamp;
+        _ ->
+            {error, no_time}
     end.
 
--spec get_metadata(logger:log_event(), [atom()]) -> logger:metadata().
-get_metadata(Msg, Config) ->
+reduce_meta(_, #{exclude_meta_fields := exclude_all}) ->
+    #{};
+reduce_meta(Meta, Config) ->
     ExcludedFields = maps:get(exclude_meta_fields, Config, get_default_excludes()),
-    case ExcludedFields of
-        exclude_all ->
-            #{};
-        _ ->
-            Meta0 = maps:without(ExcludedFields, maps:get(meta, Msg)),
-            Meta = case maps:get(message_redaction_regex_list, Config, []) of
-                [] ->
-                    Meta0;
-                Regexes ->
-                    traverse_and_redact(Meta0, Regexes)
-            end,
-            maps:fold(fun add_meta/3, #{}, Meta)
-    end.
+    maps:without(ExcludedFields, Meta).
+
+get_message(#{msg := Message}) ->
+    do_get_message(Message).
+
+do_get_message({string, Message}) when is_list(Message) ->
+    unicode:characters_to_binary(Message, unicode);
+do_get_message({string, Message}) when is_binary(Message) ->
+    Message;
+do_get_message({report, _Report}) ->
+    erlang:throw({formatter_error, unexpected_report}); % there shouldn't be any reports here
+do_get_message({Format, Args}) ->
+    unicode:characters_to_binary(io_lib:format(Format, Args), unicode).
+
+create_message(Message, Severity, TimeStamp, Meta) ->
+    maps:merge(
+        Meta,
+        #{
+            '@severity'  => Severity,
+            '@timestamp' => TimeStamp,
+            message      => Message
+        }
+    ).
+
+meta_to_printable(Meta) ->
+    maps:fold(fun add_meta/3, #{}, Meta).
 
 add_meta(K, V, Map) ->
     {Key, Value} = printable({K, V}),
@@ -116,9 +126,9 @@ printable({Key, Value}) when is_atom(Key); is_binary(Key) ->
 pid_to_binary(Pid) ->
     unicode:characters_to_binary(pid_to_list(Pid), unicode).
 
-%%filters
-redact(#{message := Message} = Msg, Regexes) ->
-    Msg#{message => redact_all(Message, Regexes)}.
+redact(Message, Meta, Config) ->
+    Regexes = maps:get(message_redaction_regex_list, Config, []),
+    {redact_all(Message, Regexes), traverse_and_redact(Meta, Regexes)}.
 
 redact_all(Message, Regexes) ->
     lists:foldl(fun redact_one/2, Message, Regexes).
@@ -151,12 +161,6 @@ compile_regex(Regex) ->
             CompiledRegex
     end.
 
-get_default_excludes() ->
-    [time, gl, domain].
-
-%% Metadata traversal
-% TO DO: Separate this to another module
-
 traverse_and_redact(Map, Regexes) when is_map(Map)->
     F = fun (K, V, Acc) ->
         Acc#{K => traverse_and_redact(V, Regexes)}
@@ -177,5 +181,8 @@ traverse_and_redact(Binary, Regexes) when is_binary(Binary) ->
 
 traverse_and_redact(Item, _) ->
     Item.
+
+get_default_excludes() ->
+    [gl, domain].
 
 % TO DO: tests
