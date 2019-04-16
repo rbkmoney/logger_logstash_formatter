@@ -130,6 +130,9 @@ redact(Message, Meta, Config) ->
     Regexes = maps:get(message_redaction_regex_list, Config, []),
     {redact_all(Message, Regexes), traverse_and_redact(Meta, Regexes)}.
 
+redact_all(Message, []) ->
+    Message;
+
 redact_all(Message, Regexes) ->
     lists:foldl(fun redact_one/2, Message, Regexes).
 
@@ -160,6 +163,9 @@ compile_regex(Regex) ->
             ),
             CompiledRegex
     end.
+
+traverse_and_redact(V, []) ->
+    V;
 
 traverse_and_redact(Map, Regexes) when is_map(Map)->
     F = fun (K, V, Acc) ->
