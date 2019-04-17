@@ -1,0 +1,18 @@
+{application, logger_logstash_formatter , [
+    {description, "Logstash formatter for OTP 21 Logger"},
+    {vsn, "1"},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib,
+        jsx,
+        rfc3339
+    ]},
+    {env, []},
+    {modules, []},
+    {maintainers, [
+        "Igor Toporkov <i.toporkov@rbkmoney.com>"
+    ]},
+    {licenses, []},
+    {links, []}
+]}.
