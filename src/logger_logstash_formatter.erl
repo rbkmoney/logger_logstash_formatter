@@ -46,11 +46,14 @@ get_severity(Event, Config) ->
     Level = maps:get(level, Event),
     maps:get(Level, LogLevelMap, Level).
 
+format_time(USec) ->
+    {ok, TS} = rfc3339:format(USec, microsecond),
+    TS.
+
 get_meta_and_timestamp(#{meta := Meta0}, Config) ->
     {Meta, TimeStamp} = case get_timestamp(Meta0) of
         {error, _} ->
-            USec = os:system_time(microsecond),
-            {ok, TS} = rfc3339:format(USec, microsecond),
+            TS = format_time(os:system_time(microsecond)),
             {Meta0, TS};
         TS ->
             % Succesfully got time from meta, can remove the field now
@@ -186,4 +189,117 @@ traverse_and_redact(Binary, Regexes) when is_binary(Binary) ->
 traverse_and_redact(Item, _) ->
     Item.
 
-% TO DO: tests
+-ifdef(TEST) .
+-include_lib("eunit/include/eunit.hrl").
+
+create_log_event(Level, Message, Meta) ->
+    #{
+        level => Level,
+        msg => Message,
+        meta => Meta
+    }.
+
+get_time() ->
+    % we need to override logger time for testing purposes
+    USec = os:system_time(microsecond),
+    {USec, format_time(USec)}.
+
+basic_test_() ->
+    {USec, BinTime} = get_time(),
+    Event0 = create_log_event(info, {string, "The simplest log ever"}, #{time => USec}),
+    Event1 = create_log_event(info, {"The simplest ~p ever", ["log"]}, #{time => USec}),
+    Event2 = create_log_event(info, {report, "The simplest log ever"}, #{time => USec}),
+    [
+        {"string log", ?_assertEqual(
+            [<<"{\"@severity\":\"info\",\"@timestamp\":\"", BinTime/binary, "\",\"message\":\"",
+                "The simplest log ever\"}">>, <<"\n">>],
+            format(Event0, #{})
+        )},
+        {"format log", ?_assertEqual(
+            [<<"{\"@severity\":\"info\",\"@timestamp\":\"", BinTime/binary, "\",\"message\":\"The ",
+                "simplest \\\"log\\\" ever\"}">>, <<"\n">>],
+            format(Event1, #{})
+        )},
+        {"report log", ?_assertEqual(
+            [<<"{\"@severity\":\"info\",\"@timestamp\":\"", BinTime/binary, "\",\"message\":\"The ",
+                "simplest log ever\"}">>, <<"\n">>],
+            format(Event2, #{})
+        )}
+    ].
+
+redact_test_() ->
+    {USec, BinTime} = get_time(),
+    Event0 = create_log_event(info, {string, "CVC: 424"}, #{time => USec}),
+    Event1 = create_log_event(info, {"CVC: ~p", [424]}, #{time => USec}),
+    Event2 = create_log_event(info, {string, "No message"}, #{
+        time => USec,
+        cvc => <<"424">>,
+        cvc_list => [<<"434">>, <<"424">>],
+        cvc_map => #{my_code => <<"424">>},
+        deep_cvc => #{your_code => [<<"434">>, <<"424">>]},
+        cvc_tuple => {<<"424">>, gotcha}
+    }),
+    FormattedEvent = [
+        <<"{\"@severity\":\"info\",\"@timestamp\":\"", BinTime/binary, "\",\"message\":\"CVC: ***\"}">>,
+        <<"\n">>
+    ],
+    [
+        {"string redact", ?_assertEqual(
+            FormattedEvent,
+            format(Event0, #{message_redaction_regex_list => [<<"424">>]})
+        )},
+        {"format redact", ?_assertEqual(
+            FormattedEvent,
+            format(Event1, #{message_redaction_regex_list => [<<"424">>]}) % equals Event0 format
+        )},
+        {"meta redact", ?_assertEqual(
+            [<<"{\"@severity\":\"info\",\"@timestamp\":\"", BinTime/binary, "\",\"cvc\":\"***\",\"cvc_list\":",
+                "[\"434\",\"***\"],\"cvc_map\":{\"my_code\":\"***\"},\"cvc_tuple", "\":\"{<<\\\"***\\\">>,gotcha}",
+                "\",\"deep_cvc\":{\"your_code\":[\"434\",\"***\"]},\"message\":\"No message\"}">>, <<"\n">>],
+            format(Event2, #{message_redaction_regex_list => [<<"424">>]})
+        )}
+    ].
+
+excludes_test_() ->
+    {USec, BinTime} = get_time(),
+    BinPid = pid_to_binary(self()),
+    Event = create_log_event(info, {string, "Excludes"}, #{
+        time => USec,
+        gl => self(),
+        domain => [rbkmoney],
+        answer => 42
+    }),
+    [
+        {"default excludes", ?_assertEqual(
+            [<<"{\"@severity\":\"info\",\"@timestamp\":\"", BinTime/binary, "\",\"answer\":42,\"message\":",
+                "\"Excludes\"}">>, <<"\n">>],
+            format(Event, #{})
+        )},
+        {"no excludes", ?_assertEqual(
+            [<<"{\"@severity\":\"info\",\"@timestamp\":\"", BinTime/binary, "\",\"answer\":42,\"domain\":",
+                "[\"rbkmoney\"],\"gl\":\"", BinPid/binary, "\",\"message\":\"Excludes\"}">>, <<"\n">>],
+            format(Event, #{exclude_meta_fields => []})
+        )},
+        {"custom ecludes", ?_assertEqual(
+            [<<"{\"@severity\":\"info\",\"@timestamp\":\"", BinTime/binary, "\",\"domain\":[\"rbkmoney\"],\"gl\":\"",
+                BinPid/binary, "\",\"message\":\"Excludes\"}">>, <<"\n">>],
+            format(Event, #{exclude_meta_fields => [answer]})
+        )},
+        {"exlude all", ?_assertEqual(
+            [<<"{\"@severity\":\"info\",\"@timestamp\":\"", BinTime/binary, "\",\"message\":\"Excludes\"}">>, <<"\n">>],
+            format(Event, #{exclude_meta_fields => exclude_all})
+        )}
+    ].
+
+level_mapping_test_() ->
+    {USec, BinTime} = get_time(),
+    Event = create_log_event(info, {string, "Mapping"}, #{time => USec}),
+    [
+        {"mapping works", ?_assertEqual(
+            [<<"{\"@severity\":\"INFORMATION\",\"@timestamp\":\"", BinTime/binary, "\",\"message\":\"Mapping\"}">>,
+                <<"\n">>],
+            format(Event, #{log_level_map => #{info => 'INFORMATION'}})
+        )}
+    ].
+
+-endif.
