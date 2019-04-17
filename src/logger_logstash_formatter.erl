@@ -23,6 +23,8 @@
     message_redaction_regex_list => list()
 }.
 
+-define(DEFAULT_EXCLUDES, [gl, domain]).
+
 -spec format(logger:log_event(), logger:formatter_config()) -> unicode:chardata().
 
 format(#{msg := {report, _}} = Msg, Config) ->
@@ -69,7 +71,7 @@ get_timestamp(Meta) ->
 reduce_meta(_, #{exclude_meta_fields := exclude_all}) ->
     #{};
 reduce_meta(Meta, Config) ->
-    ExcludedFields = maps:get(exclude_meta_fields, Config, get_default_excludes()),
+    ExcludedFields = maps:get(exclude_meta_fields, Config, ?DEFAULT_EXCLUDES),
     maps:without(ExcludedFields, Meta).
 
 get_message(#{msg := Message}) ->
@@ -95,32 +97,28 @@ create_message(Message, Severity, TimeStamp, Meta) ->
     ).
 
 meta_to_printable(Meta) ->
-    maps:fold(fun add_meta/3, #{}, Meta).
-
-add_meta(K, V, Map) ->
-    {Key, Value} = printable({K, V}),
-    Map#{Key => Value}.
+    maps:map(fun printable/2, Meta).
 
 %% can't naively encode `File` or `Pid` as json as jsx see them as lists
 %% of integers
-printable({file, File}) ->
-    {file, unicode:characters_to_binary(File, unicode)};
-printable({Key, Pid}) when is_pid(Pid) ->
-    {Key, pid_to_binary(Pid)};
-printable({Key, Port}) when is_port(Port) ->
-    {Key, unicode:characters_to_binary(erlang:port_to_list(Port), unicode)};
-printable({Key, {A, B, C} = V}) when not is_integer(A); not is_integer(B); not is_integer(C) ->
+printable(file, File) ->
+    unicode:characters_to_binary(File, unicode);
+printable(_, Pid) when is_pid(Pid) ->
+    pid_to_binary(Pid);
+printable(_, Port) when is_port(Port) ->
+    unicode:characters_to_binary(erlang:port_to_list(Port), unicode);
+printable(_, {A, B, C} = V) when not is_integer(A); not is_integer(B); not is_integer(C) ->
     % jsx:is_term treats all 3 length tuples as timestamps and fails if they are actually not
     % so we filter tuples, that are definetly not timestamps
-    {Key, unicode:characters_to_binary((io_lib:format("~p", [V])), unicode)};
+    unicode:characters_to_binary((io_lib:format("~w", [V])), unicode);
 
 %% if a value is expressable in json use it directly, otherwise
 %% try to get a printable representation and express it as a json
 %% string
-printable({Key, Value}) when is_atom(Key); is_binary(Key) ->
+printable(Key, Value) when is_atom(Key); is_binary(Key) ->
     case jsx:is_term(Value) of
-        true  -> {Key, Value};
-        false -> {Key, unicode:characters_to_binary(io_lib:format("~p", [Value]), unicode)}
+        true  -> Value;
+        false -> unicode:characters_to_binary(io_lib:format("~p", [Value]), unicode)
     end.
 
 pid_to_binary(Pid) ->
@@ -168,27 +166,24 @@ traverse_and_redact(V, []) ->
     V;
 
 traverse_and_redact(Map, Regexes) when is_map(Map)->
-    F = fun (K, V, Acc) ->
-        Acc#{K => traverse_and_redact(V, Regexes)}
+    F = fun (_, V) ->
+        traverse_and_redact(V, Regexes)
     end,
-    maps:fold(F, #{}, Map);
+    maps:map(F, Map);
 
 traverse_and_redact(List, Regexes) when is_list(List) ->
-    F = fun(V, Acc) ->
-        [traverse_and_redact(V, Regexes) | Acc]
+    F = fun(V) ->
+        traverse_and_redact(V, Regexes)
     end,
-    lists:reverse(lists:foldl(F, [], List));
+    lists:map(F, List);
 
 traverse_and_redact(Tuple, Regexes) when is_tuple(Tuple) ->
-    traverse_and_redact(tuple_to_list(Tuple), Regexes);
+    erlang:list_to_tuple(traverse_and_redact(erlang:tuple_to_list(Tuple), Regexes));
 
 traverse_and_redact(Binary, Regexes) when is_binary(Binary) ->
     redact_all(Binary, Regexes);
 
 traverse_and_redact(Item, _) ->
     Item.
-
-get_default_excludes() ->
-    [gl, domain].
 
 % TO DO: tests
