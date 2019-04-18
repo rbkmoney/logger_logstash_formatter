@@ -46,11 +46,14 @@ get_severity(Event, Config) ->
     Level = maps:get(level, Event),
     maps:get(Level, LogLevelMap, Level).
 
+format_time(USec) ->
+    {ok, TS} = rfc3339:format(USec, microsecond),
+    TS.
+
 get_meta_and_timestamp(#{meta := Meta0}, Config) ->
     {Meta, TimeStamp} = case get_timestamp(Meta0) of
         {error, _} ->
-            USec = os:system_time(microsecond),
-            {ok, TS} = rfc3339:format(USec, microsecond),
+            TS = format_time(os:system_time(microsecond)),
             {Meta0, TS};
         TS ->
             % Succesfully got time from meta, can remove the field now
@@ -186,4 +189,122 @@ traverse_and_redact(Binary, Regexes) when is_binary(Binary) ->
 traverse_and_redact(Item, _) ->
     Item.
 
-% TO DO: tests
+-ifdef(TEST) .
+-include_lib("eunit/include/eunit.hrl").
+
+create_log_event(Level, Message, Meta) ->
+    #{
+        level => Level,
+        msg => Message,
+        meta => Meta
+    }.
+
+parse_log_line([Line, _]) ->
+    jsx:decode(Line, [return_maps, {labels, existing_atom}]).
+
+get_time() ->
+    % we need to override logger time for testing purposes
+    USec = os:system_time(microsecond),
+    {USec, format_time(USec)}.
+
+basic_test_() ->
+    {USec, BinTime} = get_time(),
+    Event0 = create_log_event(info, {string, "The simplest log ever"}, #{time => USec}),
+    Event1 = create_log_event(info, {"The simplest ~p ever", ["log"]}, #{time => USec}),
+    Event2 = create_log_event(info, {report, "The simplest log ever"}, #{time => USec}),
+    [
+        {"Basic log", ?_assertEqual(
+            create_message(<<"The simplest log ever">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(Event0, #{}))
+        )},
+        {"Formated log", ?_assertEqual(
+            create_message(<<"The simplest \"log\" ever">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(Event1, #{}))
+        )},
+        {"Report log", ?_assertEqual(
+            create_message(<<"The simplest log ever">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(Event2, #{}))
+        )}
+    ].
+
+redact_test_() ->
+    {USec, BinTime} = get_time(),
+    Event0 = create_log_event(info, {string, "CVC: 424"}, #{time => USec}),
+    Event1 = create_log_event(info, {"CVC: ~p", [424]}, #{time => USec}),
+    Event2 = create_log_event(info, {string, "No message"}, #{
+        time => USec,
+        cvc => <<"424">>,
+        cvc_list => [<<"434">>, <<"424">>],
+        cvc_map => #{my_code => <<"424">>},
+        deep_cvc => #{your_code => [<<"434">>, <<"424">>]},
+        cvc_tuple => {<<"424">>, gotcha}
+    }),
+    Expected = create_message(<<"CVC: ***">>, <<"info">>, BinTime, #{}),
+    [
+        {"string redact", ?_assertEqual(
+            Expected,
+            parse_log_line(format(Event0, #{message_redaction_regex_list => [<<"424">>]}))
+        )},
+        {"format redact", ?_assertEqual(
+            Expected,
+            parse_log_line(format(Event1, #{message_redaction_regex_list => [<<"424">>]})) % equals Event0 format
+        )},
+        {"meta redact", ?_assertEqual(
+            create_message(<<"No message">>, <<"info">>, BinTime, #{
+                cvc => <<"***">>,
+                cvc_list => [<<"434">>, <<"***">>],
+                cvc_map => #{my_code => <<"***">>},
+                deep_cvc => #{your_code => [<<"434">>, <<"***">>]},
+                cvc_tuple => <<"{<<\"***\">>,gotcha}">>
+            }),
+            parse_log_line(format(Event2, #{message_redaction_regex_list => [<<"424">>]}))
+        )}
+    ].
+
+excludes_test_() ->
+    {USec, BinTime} = get_time(),
+    BinPid = pid_to_binary(self()),
+    Event = create_log_event(info, {string, "Excludes"}, #{
+        time => USec,
+        gl => self(),
+        domain => [rbkmoney],
+        answer => 42
+    }),
+    [
+        {"default excludes", ?_assertEqual(
+            create_message(<<"Excludes">>, <<"info">>, BinTime, #{answer => 42}),
+            parse_log_line(format(Event, #{}))
+        )},
+        {"no excludes", ?_assertEqual(
+            create_message(<<"Excludes">>, <<"info">>, BinTime, #{
+                gl => BinPid,
+                domain => [<<"rbkmoney">>],
+                answer => 42
+            }),
+            parse_log_line(format(Event, #{exclude_meta_fields => []}))
+        )},
+        {"custom excludes", ?_assertEqual(
+            create_message(<<"Excludes">>, <<"info">>, BinTime, #{gl => BinPid, domain => [<<"rbkmoney">>]}),
+            parse_log_line(format(Event, #{exclude_meta_fields => [answer]}))
+        )},
+        {"exlude all", ?_assertEqual(
+            create_message(<<"Excludes">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(Event, #{exclude_meta_fields => exclude_all}))
+        )}
+    ].
+
+level_mapping_test_() ->
+    {USec, BinTime} = get_time(),
+    Event = create_log_event(info, {string, "Mapping"}, #{time => USec}),
+    [
+        {"Level mapping", ?_assertEqual(
+            create_message(<<"Mapping">>, <<"INFORMATION">>, BinTime, #{}),
+            parse_log_line(format(Event, #{log_level_map => #{info => 'INFORMATION'}}))
+        )}
+    ].
+
+line_break_exists_and_single_test() ->
+    Event = create_log_event(info, {string, "Line break"}, #{}),
+    [_, <<"\n">>] = format(Event, #{}).
+
+-endif.
