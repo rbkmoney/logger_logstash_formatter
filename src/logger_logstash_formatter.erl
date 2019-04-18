@@ -303,4 +303,8 @@ level_mapping_test_() ->
         )}
     ].
 
+line_break_exists_and_single_test() ->
+    Event = create_log_event(info, {string, "Line break"}, #{}),
+    [_, <<"\n">>] = format(Event, #{}).
+
 -endif.
