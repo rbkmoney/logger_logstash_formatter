@@ -20,7 +20,8 @@
 -type config() :: #{
     exclude_meta_fields => [atom()] | exclude_all,
     log_level_map => log_level_map(),
-    message_redaction_regex_list => list()
+    message_redaction_regex_list => list(),
+    single_line_message => boolean()
 }.
 
 -define(DEFAULT_EXCLUDES, [gl, domain]).
@@ -34,7 +35,7 @@ format(#{msg := {report, _}} = Msg, Config) ->
 format(Event, Config) ->
     {Meta, TimeStamp} = get_meta_and_timestamp(Event, Config),
     Severity  = get_severity(Event, Config),
-    Message   = get_message(Event),
+    Message   = get_message(Event, Config),
     {RedactedMsg, RedactedMeta} = redact(Message, Meta, Config),
     PrintableMeta = meta_to_printable(RedactedMeta),
     Formatted = create_message(RedactedMsg, Severity, TimeStamp, PrintableMeta),
@@ -77,17 +78,34 @@ reduce_meta(Meta, Config) ->
     ExcludedFields = maps:get(exclude_meta_fields, Config, ?DEFAULT_EXCLUDES),
     maps:without(ExcludedFields, Meta).
 
-get_message(#{msg := Message}) ->
-    do_get_message(Message).
+get_message(#{msg := Message}, Config) ->
+    do_get_message(Message, Config).
 
-do_get_message({string, Message}) when is_list(Message) ->
+do_get_message({string, Message}, _Config) when is_list(Message) ->
     unicode:characters_to_binary(Message, unicode);
-do_get_message({string, Message}) when is_binary(Message) ->
+do_get_message({string, Message}, _Config) when is_binary(Message) ->
     Message;
-do_get_message({report, _Report}) ->
+do_get_message({report, _Report}, _Config) ->
     erlang:throw({formatter_error, unexpected_report}); % there shouldn't be any reports here
-do_get_message({Format, Args}) ->
-    unicode:characters_to_binary(io_lib:format(Format, Args), unicode).
+do_get_message({Format, Args}, Config) ->
+    NewFormat = rebuild_format(Format, Config),
+    unicode:characters_to_binary(io_lib:format(NewFormat, Args), unicode).
+
+rebuild_format(Format, Config) ->
+    IsSingleLine = maps:get(single_line_message, Config, true),
+    try_rebuild_single_line(IsSingleLine, Format).
+
+try_rebuild_single_line(true, Format) ->
+    rebuild_single_line(Format);
+try_rebuild_single_line(false, Format) ->
+    Format.
+
+rebuild_single_line([]) ->
+    [];
+rebuild_single_line([$~, $p | Format]) ->
+    [$~, $0, $p | rebuild_single_line(Format)];
+rebuild_single_line([C | Format]) ->
+    [C | rebuild_single_line(Format)].
 
 create_message(Message, Severity, TimeStamp, Meta) ->
     maps:merge(
