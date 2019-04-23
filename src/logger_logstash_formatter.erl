@@ -88,24 +88,27 @@ do_get_message({string, Message}, _Config) when is_binary(Message) ->
 do_get_message({report, _Report}, _Config) ->
     erlang:throw({formatter_error, unexpected_report}); % there shouldn't be any reports here
 do_get_message({Format, Args}, Config) ->
-    NewFormat = rebuild_format(Format, Config),
-    unicode:characters_to_binary(io_lib:format(NewFormat, Args), unicode).
+    FormatList = io_lib:scan_format(Format, Args),
+    NewFormatList = reformat(FormatList, Config),
+    unicode:characters_to_binary(io_lib:build_text(NewFormatList), unicode).
 
-rebuild_format(Format, Config) ->
+-spec reformat(FormatList, config()) -> FormatList when
+    FormatList :: [char() | io_lib:format_spec()].
+reformat(FormatList, Config) ->
     IsSingleLine = maps:get(single_line_message, Config, true),
-    try_rebuild_single_line(IsSingleLine, Format).
+    try_reformat_single_line(IsSingleLine, FormatList).
 
-try_rebuild_single_line(true, Format) ->
-    rebuild_single_line(Format);
-try_rebuild_single_line(false, Format) ->
-    Format.
+try_reformat_single_line(true, FormatList) ->
+    lists:map(fun do_reformat_single_line/1, FormatList);
+try_reformat_single_line(false, FormatList) ->
+    FormatList.
 
-rebuild_single_line([]) ->
-    [];
-rebuild_single_line([$~, $p | Format]) ->
-    [$~, $0, $p | rebuild_single_line(Format)];
-rebuild_single_line([C | Format]) ->
-    [C | rebuild_single_line(Format)].
+-spec do_reformat_single_line(FormatItem) -> FormatItem when
+    FormatItem :: char() | io_lib:format_spec().
+do_reformat_single_line(#{control_char := C} = Spec) when C =:= $p orelse C =:= $P->
+    Spec#{width => 0};
+do_reformat_single_line(C) ->
+    C.
 
 create_message(Message, Severity, TimeStamp, Meta) ->
     maps:merge(
@@ -263,15 +266,15 @@ redact_test_() ->
     }),
     Expected = create_message(<<"CVC: ***">>, <<"info">>, BinTime, #{}),
     [
-        {"string redact", ?_assertEqual(
+        {"String redact", ?_assertEqual(
             Expected,
             parse_log_line(format(Event0, #{message_redaction_regex_list => [<<"424">>]}))
         )},
-        {"format redact", ?_assertEqual(
+        {"Format redact", ?_assertEqual(
             Expected,
             parse_log_line(format(Event1, #{message_redaction_regex_list => [<<"424">>]})) % equals Event0 format
         )},
-        {"meta redact", ?_assertEqual(
+        {"Meta redact", ?_assertEqual(
             create_message(<<"No message">>, <<"info">>, BinTime, #{
                 cvc => <<"***">>,
                 cvc_list => [<<"434">>, <<"***">>],
@@ -294,11 +297,11 @@ excludes_test_() ->
         answer => 42
     }),
     [
-        {"default excludes", ?_assertEqual(
+        {"Default excludes", ?_assertEqual(
             create_message(<<"Excludes">>, <<"info">>, BinTime, #{answer => 42}),
             parse_log_line(format(Event, #{}))
         )},
-        {"no excludes", ?_assertEqual(
+        {"No excludes", ?_assertEqual(
             create_message(<<"Excludes">>, <<"info">>, BinTime, #{
                 gl => BinPid,
                 domain => [<<"rbkmoney">>],
@@ -306,11 +309,11 @@ excludes_test_() ->
             }),
             parse_log_line(format(Event, #{exclude_meta_fields => []}))
         )},
-        {"custom excludes", ?_assertEqual(
+        {"Custom excludes", ?_assertEqual(
             create_message(<<"Excludes">>, <<"info">>, BinTime, #{gl => BinPid, domain => [<<"rbkmoney">>]}),
             parse_log_line(format(Event, #{exclude_meta_fields => [answer]}))
         )},
-        {"exlude all", ?_assertEqual(
+        {"Exlude all", ?_assertEqual(
             create_message(<<"Excludes">>, <<"info">>, BinTime, #{}),
             parse_log_line(format(Event, #{exclude_meta_fields => exclude_all}))
         )}
@@ -331,5 +334,57 @@ level_mapping_test_() ->
 line_break_exists_and_single_test() ->
     Event = create_log_event(info, {string, "Line break"}, #{}),
     [_, <<"\n">>] = format(Event, #{}).
+
+-spec single_line_reformat_test_() -> _.
+single_line_reformat_test_() ->
+    {USec, BinTime} = get_time(),
+    ComplexpEvent = create_log_event(info, {"Complex ~1p", [[1, 2, 3]]}, #{time => USec}),
+    ComplexPEvent = create_log_event(info, {"Complex ~1P", [[1, 2, 3], 100]}, #{time => USec}),
+    [
+        {"Single line p", ?_assertEqual(
+            create_message(<<"Complex [1,2,3]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexpEvent, #{single_line_message => true}))
+        )},
+        {"Single line P", ?_assertEqual(
+            create_message(<<"Complex [1,2,3]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexPEvent, #{single_line_message => true}))
+        )},
+        {"Multiple lines p", ?_assertEqual(
+            create_message(<<"Complex [1,\n         2,\n         3]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexpEvent, #{single_line_message => false}))
+        )},
+        {"Multiple lines P", ?_assertEqual(
+            create_message(<<"Complex [1,\n         2,\n         3]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexPEvent, #{single_line_message => false}))
+        )}
+    ].
+
+-spec various_format_types_test_() -> _.
+various_format_types_test_() ->
+    {USec, BinTime} = get_time(),
+    ValidIOFormats = [
+        'Just ~p',
+        "Just ~p",
+        <<"Just ~p">>
+    ],
+    [
+        [
+            {"Without reformat", ?_assertEqual(
+                create_message(<<"Just atom">>, <<"info">>, BinTime, #{}),
+                parse_log_line(format(
+                    create_log_event(info, {F, [atom]}, #{time => USec}),
+                    #{single_line_message => false}
+                ))
+            )},
+            {"With reformat", ?_assertEqual(
+                create_message(<<"Just atom">>, <<"info">>, BinTime, #{}),
+                parse_log_line(format(
+                    create_log_event(info, {F, [atom]}, #{time => USec}),
+                    #{single_line_message => true}
+                ))
+            )}
+        ]
+        || F <- ValidIOFormats
+    ].
 
 -endif.
