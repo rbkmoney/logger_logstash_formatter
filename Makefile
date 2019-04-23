@@ -8,7 +8,7 @@ TEMPLATES_PATH = .
 
 BUILD_IMAGE_TAG := 7267e019e3c75e8e5ae5c9f2004960341733f829
 
-CALL_ANYWHERE := all submodules rebar-update compile lint xref test clean distclean
+CALL_ANYWHERE := all submodules rebar-update compile lint xref dialyze test clean distclean
 
 CALL_W_CONTAINER := $(CALL_ANYWHERE)
 
@@ -35,6 +35,9 @@ test: submodules
 
 xref: submodules
 	$(REBAR) xref
+
+dialyze: submodules
+	$(REBAR) dialyzer
 
 clean:
 	$(REBAR) clean

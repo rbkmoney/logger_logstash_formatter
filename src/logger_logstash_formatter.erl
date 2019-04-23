@@ -225,6 +225,9 @@ get_time() ->
     USec = os:system_time(microsecond),
     {USec, format_time(USec)}.
 
+-spec test() -> _.  % auto generated eunit function
+
+-spec basic_test_() -> _.
 basic_test_() ->
     {USec, BinTime} = get_time(),
     Event0 = create_log_event(info, {string, "The simplest log ever"}, #{time => USec}),
@@ -245,6 +248,7 @@ basic_test_() ->
         )}
     ].
 
+-spec redact_test_() -> _.
 redact_test_() ->
     {USec, BinTime} = get_time(),
     Event0 = create_log_event(info, {string, "CVC: 424"}, #{time => USec}),
@@ -279,6 +283,7 @@ redact_test_() ->
         )}
     ].
 
+-spec excludes_test_() -> _.
 excludes_test_() ->
     {USec, BinTime} = get_time(),
     BinPid = pid_to_binary(self()),
@@ -311,6 +316,7 @@ excludes_test_() ->
         )}
     ].
 
+-spec level_mapping_test_() -> _.
 level_mapping_test_() ->
     {USec, BinTime} = get_time(),
     Event = create_log_event(info, {string, "Mapping"}, #{time => USec}),
@@ -321,6 +327,7 @@ level_mapping_test_() ->
         )}
     ].
 
+-spec line_break_exists_and_single_test() -> _.
 line_break_exists_and_single_test() ->
     Event = create_log_event(info, {string, "Line break"}, #{}),
     [_, <<"\n">>] = format(Event, #{}).
