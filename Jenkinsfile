@@ -17,6 +17,9 @@ build('logger_logstash_formatter', 'docker-host') {
     runStage('lint') {
       sh 'make wc_lint'
     }
+    runStage('dialyzer') {
+      sh 'make wc_dialyze'
+    }
     runStage('xref') {
       sh 'make wc_xref'
     }

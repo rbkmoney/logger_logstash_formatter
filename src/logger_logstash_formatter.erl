@@ -12,6 +12,8 @@
 
 %% Types
 -export_type([config/0]).
+-export_type([chars_limit/0]).
+-export_type([depth/0]).
 
 -export_type([log_level_map/0]).
 
@@ -20,8 +22,13 @@
 -type config() :: #{
     exclude_meta_fields => [atom()] | exclude_all,
     log_level_map => log_level_map(),
-    message_redaction_regex_list => list()
+    message_redaction_regex_list => list(),
+    single_line => boolean(),
+    chars_limit => pos_integer() | unlimited,
+    depth => pos_integer() | unlimited
 }.
+-type chars_limit() :: pos_integer() | unlimited.
+-type depth() :: pos_integer() | unlimited.
 
 -define(DEFAULT_EXCLUDES, [gl, domain]).
 
@@ -34,9 +41,9 @@ format(#{msg := {report, _}} = Msg, Config) ->
 format(Event, Config) ->
     {Meta, TimeStamp} = get_meta_and_timestamp(Event, Config),
     Severity  = get_severity(Event, Config),
-    Message   = get_message(Event),
+    Message   = get_message(Event, Config),
     {RedactedMsg, RedactedMeta} = redact(Message, Meta, Config),
-    PrintableMeta = meta_to_printable(RedactedMeta),
+    PrintableMeta = meta_to_printable(RedactedMeta, Config),
     Formatted = create_message(RedactedMsg, Severity, TimeStamp, PrintableMeta),
     Encoded = jsx:encode(Formatted),
     [Encoded, <<"\n">>].
@@ -77,17 +84,56 @@ reduce_meta(Meta, Config) ->
     ExcludedFields = maps:get(exclude_meta_fields, Config, ?DEFAULT_EXCLUDES),
     maps:without(ExcludedFields, Meta).
 
-get_message(#{msg := Message}) ->
-    do_get_message(Message).
+get_message(#{msg := Message}, Config) ->
+    do_get_message(Message, Config).
 
-do_get_message({string, Message}) when is_list(Message) ->
+do_get_message({string, Message}, _Config) when is_list(Message) ->
     unicode:characters_to_binary(Message, unicode);
-do_get_message({string, Message}) when is_binary(Message) ->
+do_get_message({string, Message}, _Config) when is_binary(Message) ->
     Message;
-do_get_message({report, _Report}) ->
+do_get_message({report, _Report}, _Config) ->
     erlang:throw({formatter_error, unexpected_report}); % there shouldn't be any reports here
-do_get_message({Format, Args}) ->
-    unicode:characters_to_binary(io_lib:format(Format, Args), unicode).
+do_get_message({Format, Args}, Config) ->
+    format_to_binary(Format, Args, Config).
+
+-spec reformat(FormatList, config()) -> FormatList when
+    FormatList :: [char() | io_lib:format_spec()].
+reformat(FormatList, Config) ->
+    IsSingleLine = maps:get(single_line, Config, true),
+    Depth = maps:get(depth, Config, 30),
+    try_reformat({IsSingleLine, Depth}, FormatList).
+
+try_reformat({false, unlimited}, FormatList) ->
+    FormatList;
+try_reformat(Flags, FormatList) ->
+    lists:map(fun(C) -> do_reformat(Flags, C) end, FormatList).
+
+-spec do_reformat({boolean(), depth()}, FormatItem) -> FormatItem when
+    FormatItem :: char() | io_lib:format_spec().
+do_reformat(Flags, Spec) ->
+    Spec1 = apply_single_line_reformat(Flags, Spec),
+    apply_depth_reformat(Flags, Spec1).
+
+apply_single_line_reformat({true, _Depth}, #{control_char := C} = Spec) when C =:= $p orelse C =:= $P ->
+    Spec#{width => 0};
+apply_single_line_reformat({_IsSingleLIne, _Depth}, Spec) ->
+    Spec.
+
+apply_depth_reformat({_IsSingleLIne, Depth}, #{control_char := C, args := Args} = Spec) when is_integer(Depth) ->
+    case {C, Args} of
+        {$p, [Value]} ->
+            Spec#{control_char => $P, args => [Value, Depth]};
+        {$w, [Value]} ->
+            Spec#{control_char => $W, args => [Value, Depth]};
+        {$P, [Value, SpecDepth]} ->
+            Spec#{args => [Value, erlang:min(Depth, SpecDepth)]};
+        {$W, [Value, SpecDepth]} ->
+            Spec#{args => [Value, erlang:min(Depth, SpecDepth)]};
+        _Other ->
+            Spec
+    end;
+apply_depth_reformat({_IsSingleLIne, _Depth}, Spec) ->
+    Spec.
 
 create_message(Message, Severity, TimeStamp, Meta) ->
     maps:merge(
@@ -99,29 +145,46 @@ create_message(Message, Severity, TimeStamp, Meta) ->
         }
     ).
 
-meta_to_printable(Meta) ->
-    maps:map(fun printable/2, Meta).
+meta_to_printable(Meta, Config) ->
+    maps:map(fun(K, V)  -> printable(K, V, Config) end, Meta).
+
+-spec format_to_binary(io:format(), [any()], config()) -> binary().
+format_to_binary(Format, Args, Config) ->
+    FormatList = io_lib:scan_format(Format, Args),
+    NewFormatList = reformat(FormatList, Config),
+    % There is undocumented io_lib:build_text/2 usage here. Options format can be changed to map in future.
+    % see https://github.com/erlang/otp/commit/29a347ffd408c68861a914db4efc75d8ea20a762 for details
+    BuildTextOptions = build_text_options(Config),
+    unicode:characters_to_binary(io_lib:build_text(NewFormatList, BuildTextOptions), unicode).
+
+build_text_options(Config) ->
+    case maps:get(chars_limit, Config, 1024) of
+        unlimited ->
+            [];
+        CharsLimit ->
+            [{chars_limit, CharsLimit}]
+    end.
 
 %% can't naively encode `File` or `Pid` as json as jsx see them as lists
 %% of integers
-printable(file, File) ->
+printable(file, File, _Config) ->
     unicode:characters_to_binary(File, unicode);
-printable(_, Pid) when is_pid(Pid) ->
+printable(_, Pid, _Config) when is_pid(Pid) ->
     pid_to_binary(Pid);
-printable(_, Port) when is_port(Port) ->
+printable(_, Port, _Config) when is_port(Port) ->
     unicode:characters_to_binary(erlang:port_to_list(Port), unicode);
-printable(_, {A, B, C} = V) when not is_integer(A); not is_integer(B); not is_integer(C) ->
+printable(_, {A, B, C} = V, Config) when not is_integer(A); not is_integer(B); not is_integer(C) ->
     % jsx:is_term treats all 3 length tuples as timestamps and fails if they are actually not
     % so we filter tuples, that are definetly not timestamps
-    unicode:characters_to_binary((io_lib:format("~w", [V])), unicode);
+    format_to_binary("~p", [V], Config);
 
 %% if a value is expressable in json use it directly, otherwise
 %% try to get a printable representation and express it as a json
 %% string
-printable(Key, Value) when is_atom(Key); is_binary(Key) ->
+printable(Key, Value, Config) when is_atom(Key); is_binary(Key) ->
     case jsx:is_term(Value) of
         true  -> Value;
-        false -> unicode:characters_to_binary(io_lib:format("~p", [Value]), unicode)
+        false -> format_to_binary("~p", [Value], Config)
     end.
 
 pid_to_binary(Pid) ->
@@ -207,6 +270,9 @@ get_time() ->
     USec = os:system_time(microsecond),
     {USec, format_time(USec)}.
 
+-spec test() -> _.  % auto generated eunit function
+
+-spec basic_test_() -> _.
 basic_test_() ->
     {USec, BinTime} = get_time(),
     Event0 = create_log_event(info, {string, "The simplest log ever"}, #{time => USec}),
@@ -227,6 +293,7 @@ basic_test_() ->
         )}
     ].
 
+-spec redact_test_() -> _.
 redact_test_() ->
     {USec, BinTime} = get_time(),
     Event0 = create_log_event(info, {string, "CVC: 424"}, #{time => USec}),
@@ -241,15 +308,15 @@ redact_test_() ->
     }),
     Expected = create_message(<<"CVC: ***">>, <<"info">>, BinTime, #{}),
     [
-        {"string redact", ?_assertEqual(
+        {"String redact", ?_assertEqual(
             Expected,
             parse_log_line(format(Event0, #{message_redaction_regex_list => [<<"424">>]}))
         )},
-        {"format redact", ?_assertEqual(
+        {"Format redact", ?_assertEqual(
             Expected,
             parse_log_line(format(Event1, #{message_redaction_regex_list => [<<"424">>]})) % equals Event0 format
         )},
-        {"meta redact", ?_assertEqual(
+        {"Meta redact", ?_assertEqual(
             create_message(<<"No message">>, <<"info">>, BinTime, #{
                 cvc => <<"***">>,
                 cvc_list => [<<"434">>, <<"***">>],
@@ -261,6 +328,7 @@ redact_test_() ->
         )}
     ].
 
+-spec excludes_test_() -> _.
 excludes_test_() ->
     {USec, BinTime} = get_time(),
     BinPid = pid_to_binary(self()),
@@ -271,11 +339,11 @@ excludes_test_() ->
         answer => 42
     }),
     [
-        {"default excludes", ?_assertEqual(
+        {"Default excludes", ?_assertEqual(
             create_message(<<"Excludes">>, <<"info">>, BinTime, #{answer => 42}),
             parse_log_line(format(Event, #{}))
         )},
-        {"no excludes", ?_assertEqual(
+        {"No excludes", ?_assertEqual(
             create_message(<<"Excludes">>, <<"info">>, BinTime, #{
                 gl => BinPid,
                 domain => [<<"rbkmoney">>],
@@ -283,16 +351,17 @@ excludes_test_() ->
             }),
             parse_log_line(format(Event, #{exclude_meta_fields => []}))
         )},
-        {"custom excludes", ?_assertEqual(
+        {"Custom excludes", ?_assertEqual(
             create_message(<<"Excludes">>, <<"info">>, BinTime, #{gl => BinPid, domain => [<<"rbkmoney">>]}),
             parse_log_line(format(Event, #{exclude_meta_fields => [answer]}))
         )},
-        {"exlude all", ?_assertEqual(
+        {"Exlude all", ?_assertEqual(
             create_message(<<"Excludes">>, <<"info">>, BinTime, #{}),
             parse_log_line(format(Event, #{exclude_meta_fields => exclude_all}))
         )}
     ].
 
+-spec level_mapping_test_() -> _.
 level_mapping_test_() ->
     {USec, BinTime} = get_time(),
     Event = create_log_event(info, {string, "Mapping"}, #{time => USec}),
@@ -303,8 +372,145 @@ level_mapping_test_() ->
         )}
     ].
 
+-spec line_break_exists_and_single_test() -> _.
 line_break_exists_and_single_test() ->
     Event = create_log_event(info, {string, "Line break"}, #{}),
     [_, <<"\n">>] = format(Event, #{}).
+
+-spec single_line_reformat_test_() -> _.
+single_line_reformat_test_() ->
+    {USec, BinTime} = get_time(),
+    ComplexpEvent = create_log_event(info, {"Complex ~1p", [[1, 2, 3]]}, #{time => USec}),
+    ComplexPEvent = create_log_event(info, {"Complex ~1P", [[1, 2, 3], 100]}, #{time => USec}),
+    [
+        {"Single line p", ?_assertEqual(
+            create_message(<<"Complex [1,2,3]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexpEvent, #{single_line => true}))
+        )},
+        {"Single line P", ?_assertEqual(
+            create_message(<<"Complex [1,2,3]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexPEvent, #{single_line => true}))
+        )},
+        {"Multiple lines p", ?_assertEqual(
+            create_message(<<"Complex [1,\n         2,\n         3]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexpEvent, #{single_line => false}))
+        )},
+        {"Multiple lines P", ?_assertEqual(
+            create_message(<<"Complex [1,\n         2,\n         3]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexPEvent, #{single_line => false}))
+        )}
+    ].
+
+-spec depth_reformat_test_() -> _.
+depth_reformat_test_() ->
+    {USec, BinTime} = get_time(),
+    ComplexpEvent = create_log_event(info, {"~p", [[1, 2, 3]]}, #{time => USec}),
+    ComplexPEvent = create_log_event(info, {"~P", [[1, 2, 3], 100]}, #{time => USec}),
+    ComplexwEvent = create_log_event(info, {"~w", [[1, 2, 3]]}, #{time => USec}),
+    ComplexWEvent = create_log_event(info, {"~W", [[1, 2, 3], 100]}, #{time => USec}),
+    ComplexSmallPEvent = create_log_event(info, {"~P", [[1, 2, 3], 2]}, #{time => USec}),
+    ComplexSmallWEvent = create_log_event(info, {"~W", [[1, 2, 3], 2]}, #{time => USec}),
+    [
+        {"Unlimited p", ?_assertEqual(
+            create_message(<<"[1,2,3]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexpEvent, #{depth => unlimited}))
+        )},
+        {"Unlimited P", ?_assertEqual(
+            create_message(<<"[1,2,3]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexPEvent, #{depth => unlimited}))
+        )},
+        {"Unlimited w", ?_assertEqual(
+            create_message(<<"[1,2,3]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexwEvent, #{depth => unlimited}))
+        )},
+        {"Unlimited W", ?_assertEqual(
+            create_message(<<"[1,2,3]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexWEvent, #{depth => unlimited}))
+        )},
+        {"Unlimited small P", ?_assertEqual(
+            create_message(<<"[1|...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexSmallPEvent, #{depth => unlimited}))
+        )},
+        {"Unlimited small W", ?_assertEqual(
+            create_message(<<"[1|...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexSmallWEvent, #{depth => unlimited}))
+        )},
+        {"Limited p", ?_assertEqual(
+            create_message(<<"[...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexpEvent, #{depth => 1}))
+        )},
+        {"Limited P", ?_assertEqual(
+            create_message(<<"[...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexPEvent, #{depth => 1}))
+        )},
+        {"Limited w", ?_assertEqual(
+            create_message(<<"[...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexwEvent, #{depth => 1}))
+        )},
+        {"Limited W", ?_assertEqual(
+            create_message(<<"[...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexWEvent, #{depth => 1}))
+        )},
+        {"Limited small P", ?_assertEqual(
+            create_message(<<"[1|...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexSmallPEvent, #{depth => 3}))
+        )},
+        {"Limited small W", ?_assertEqual(
+            create_message(<<"[1|...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexSmallWEvent, #{depth => 3}))
+        )},
+        {"Limited very small P", ?_assertEqual(
+            create_message(<<"[...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexSmallPEvent, #{depth => 1}))
+        )},
+        {"Limited very small W", ?_assertEqual(
+            create_message(<<"[...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexSmallWEvent, #{depth => 1}))
+        )}
+    ].
+
+
+-spec chars_limit_test_() -> _.
+chars_limit_test_() ->
+    {USec, BinTime} = get_time(),
+    Event = create_log_event(info, {"~p", [[1, 2, 3]]}, #{time => USec}),
+    [
+        {"Unlimited", ?_assertEqual(
+            create_message(<<"[1,2,3]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(Event, #{chars_limit => unlimited}))
+        )},
+        {"Limited", ?_assertEqual(
+            create_message(<<"[...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(Event, #{chars_limit => 1}))
+        )}
+    ].
+
+-spec various_format_types_test_() -> _.
+various_format_types_test_() ->
+    {USec, BinTime} = get_time(),
+    ValidIOFormats = [
+        'Just ~p',
+        "Just ~p",
+        <<"Just ~p">>
+    ],
+    [
+        [
+            {"Without reformat", ?_assertEqual(
+                create_message(<<"Just atom">>, <<"info">>, BinTime, #{}),
+                parse_log_line(format(
+                    create_log_event(info, {F, [atom]}, #{time => USec}),
+                    #{single_line_message => false}
+                ))
+            )},
+            {"With reformat", ?_assertEqual(
+                create_message(<<"Just atom">>, <<"info">>, BinTime, #{}),
+                parse_log_line(format(
+                    create_log_event(info, {F, [atom]}, #{time => USec}),
+                    #{single_line_message => true}
+                ))
+            )}
+        ]
+        || F <- ValidIOFormats
+    ].
 
 -endif.
