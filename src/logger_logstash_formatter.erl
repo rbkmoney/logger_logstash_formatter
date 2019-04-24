@@ -176,7 +176,7 @@ printable(_, Port, _Config) when is_port(Port) ->
 printable(_, {A, B, C} = V, Config) when not is_integer(A); not is_integer(B); not is_integer(C) ->
     % jsx:is_term treats all 3 length tuples as timestamps and fails if they are actually not
     % so we filter tuples, that are definetly not timestamps
-    format_to_binary("~w", [V], Config);
+    format_to_binary("~p", [V], Config);
 
 %% if a value is expressable in json use it directly, otherwise
 %% try to get a printable representation and express it as a json
