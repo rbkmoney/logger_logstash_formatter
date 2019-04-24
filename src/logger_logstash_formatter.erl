@@ -152,7 +152,7 @@ meta_to_printable(Meta, Config) ->
 format_to_binary(Format, Args, Config) ->
     FormatList = io_lib:scan_format(Format, Args),
     NewFormatList = reformat(FormatList, Config),
-    % There is undocumented io_lib:build_text/2 usage. Options format can be changed to map in future.
+    % There is undocumented io_lib:build_text/2 usage here. Options format can be changed to map in future.
     % see https://github.com/erlang/otp/commit/29a347ffd408c68861a914db4efc75d8ea20a762 for details
     BuildTextOptions = build_text_options(Config),
     unicode:characters_to_binary(io_lib:build_text(NewFormatList, BuildTextOptions), unicode).
