@@ -12,6 +12,7 @@
 
 %% Types
 -export_type([config/0]).
+-export_type([depth/0]).
 
 -export_type([log_level_map/0]).
 
@@ -21,8 +22,10 @@
     exclude_meta_fields => [atom()] | exclude_all,
     log_level_map => log_level_map(),
     message_redaction_regex_list => list(),
-    single_line => boolean()
+    single_line => boolean(),
+    depth => pos_integer() | unlimited
 }.
+-type depth() :: pos_integer() | unlimited.
 
 -define(DEFAULT_EXCLUDES, [gl, domain]).
 
@@ -93,20 +96,41 @@ do_get_message({Format, Args}, Config) ->
 -spec reformat(FormatList, config()) -> FormatList when
     FormatList :: [char() | io_lib:format_spec()].
 reformat(FormatList, Config) ->
-    IsSingleLine = maps:get(single_line_message, Config, true),
-    try_reformat_single_line(IsSingleLine, FormatList).
+    IsSingleLine = maps:get(single_line, Config, true),
+    Depth = maps:get(depth, Config, 30),
+    try_reformat({IsSingleLine, Depth}, FormatList).
 
-try_reformat_single_line(true, FormatList) ->
-    lists:map(fun do_reformat_single_line/1, FormatList);
-try_reformat_single_line(false, FormatList) ->
-    FormatList.
+try_reformat({false, unlimited}, FormatList) ->
+    FormatList;
+try_reformat(Flags, FormatList) ->
+    lists:map(fun(C) -> do_reformat(Flags, C) end, FormatList).
 
--spec do_reformat_single_line(FormatItem) -> FormatItem when
+-spec do_reformat({boolean(), depth()}, FormatItem) -> FormatItem when
     FormatItem :: char() | io_lib:format_spec().
-do_reformat_single_line(#{control_char := C} = Spec) when C =:= $p orelse C =:= $P->
+do_reformat(Flags, Spec) ->
+    Spec1 = apply_single_line_reformat(Flags, Spec),
+    apply_depth_reformat(Flags, Spec1).
+
+apply_single_line_reformat({true, _Depth}, #{control_char := C} = Spec) when C =:= $p orelse C =:= $P ->
     Spec#{width => 0};
-do_reformat_single_line(C) ->
-    C.
+apply_single_line_reformat({_IsSingleLIne, _Depth}, Spec) ->
+    Spec.
+
+apply_depth_reformat({_IsSingleLIne, Depth}, #{control_char := C, args := Args} = Spec) when is_integer(Depth) ->
+    case {C, Args} of
+        {$p, [Value]} ->
+            Spec#{control_char => $P, args => [Value, Depth]};
+        {$w, [Value]} ->
+            Spec#{control_char => $W, args => [Value, Depth]};
+        {$P, [Value, SpecDepth]} ->
+            Spec#{args => [Value, erlang:min(Depth, SpecDepth)]};
+        {$W, [Value, SpecDepth]} ->
+            Spec#{args => [Value, erlang:min(Depth, SpecDepth)]};
+        _Other ->
+            Spec
+    end;
+apply_depth_reformat({_IsSingleLIne, _Depth}, Spec) ->
+    Spec.
 
 create_message(Message, Severity, TimeStamp, Meta) ->
     maps:merge(
@@ -347,19 +371,87 @@ single_line_reformat_test_() ->
     [
         {"Single line p", ?_assertEqual(
             create_message(<<"Complex [1,2,3]">>, <<"info">>, BinTime, #{}),
-            parse_log_line(format(ComplexpEvent, #{single_line_message => true}))
+            parse_log_line(format(ComplexpEvent, #{single_line => true}))
         )},
         {"Single line P", ?_assertEqual(
             create_message(<<"Complex [1,2,3]">>, <<"info">>, BinTime, #{}),
-            parse_log_line(format(ComplexPEvent, #{single_line_message => true}))
+            parse_log_line(format(ComplexPEvent, #{single_line => true}))
         )},
         {"Multiple lines p", ?_assertEqual(
             create_message(<<"Complex [1,\n         2,\n         3]">>, <<"info">>, BinTime, #{}),
-            parse_log_line(format(ComplexpEvent, #{single_line_message => false}))
+            parse_log_line(format(ComplexpEvent, #{single_line => false}))
         )},
         {"Multiple lines P", ?_assertEqual(
             create_message(<<"Complex [1,\n         2,\n         3]">>, <<"info">>, BinTime, #{}),
-            parse_log_line(format(ComplexPEvent, #{single_line_message => false}))
+            parse_log_line(format(ComplexPEvent, #{single_line => false}))
+        )}
+    ].
+
+-spec depth_reformat_test_() -> _.
+depth_reformat_test_() ->
+    {USec, BinTime} = get_time(),
+    ComplexpEvent = create_log_event(info, {"~p", [[1, 2, 3]]}, #{time => USec}),
+    ComplexPEvent = create_log_event(info, {"~P", [[1, 2, 3], 100]}, #{time => USec}),
+    ComplexwEvent = create_log_event(info, {"~w", [[1, 2, 3]]}, #{time => USec}),
+    ComplexWEvent = create_log_event(info, {"~W", [[1, 2, 3], 100]}, #{time => USec}),
+    ComplexSmallPEvent = create_log_event(info, {"~P", [[1, 2, 3], 2]}, #{time => USec}),
+    ComplexSmallWEvent = create_log_event(info, {"~W", [[1, 2, 3], 2]}, #{time => USec}),
+    [
+        {"Unlimited p", ?_assertEqual(
+            create_message(<<"[1,2,3]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexpEvent, #{depth => unlimited}))
+        )},
+        {"Unlimited P", ?_assertEqual(
+            create_message(<<"[1,2,3]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexPEvent, #{depth => unlimited}))
+        )},
+        {"Unlimited w", ?_assertEqual(
+            create_message(<<"[1,2,3]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexwEvent, #{depth => unlimited}))
+        )},
+        {"Unlimited W", ?_assertEqual(
+            create_message(<<"[1,2,3]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexWEvent, #{depth => unlimited}))
+        )},
+        {"Unlimited small P", ?_assertEqual(
+            create_message(<<"[1|...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexSmallPEvent, #{depth => unlimited}))
+        )},
+        {"Unlimited small W", ?_assertEqual(
+            create_message(<<"[1|...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexSmallWEvent, #{depth => unlimited}))
+        )},
+        {"Limited p", ?_assertEqual(
+            create_message(<<"[...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexpEvent, #{depth => 1}))
+        )},
+        {"Limited P", ?_assertEqual(
+            create_message(<<"[...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexPEvent, #{depth => 1}))
+        )},
+        {"Limited w", ?_assertEqual(
+            create_message(<<"[...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexwEvent, #{depth => 1}))
+        )},
+        {"Limited W", ?_assertEqual(
+            create_message(<<"[...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexWEvent, #{depth => 1}))
+        )},
+        {"Limited small P", ?_assertEqual(
+            create_message(<<"[1|...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexSmallPEvent, #{depth => 3}))
+        )},
+        {"Limited small W", ?_assertEqual(
+            create_message(<<"[1|...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexSmallWEvent, #{depth => 3}))
+        )},
+        {"Limited very small P", ?_assertEqual(
+            create_message(<<"[...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexSmallPEvent, #{depth => 1}))
+        )},
+        {"Limited very small W", ?_assertEqual(
+            create_message(<<"[...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(ComplexSmallWEvent, #{depth => 1}))
         )}
     ].
 
