@@ -12,6 +12,7 @@
 
 %% Types
 -export_type([config/0]).
+-export_type([chars_limit/0]).
 -export_type([depth/0]).
 
 -export_type([log_level_map/0]).
@@ -23,8 +24,10 @@
     log_level_map => log_level_map(),
     message_redaction_regex_list => list(),
     single_line => boolean(),
+    chars_limit => pos_integer() | unlimited,
     depth => pos_integer() | unlimited
 }.
+-type chars_limit() :: pos_integer() | unlimited.
 -type depth() :: pos_integer() | unlimited.
 
 -define(DEFAULT_EXCLUDES, [gl, domain]).
@@ -149,7 +152,18 @@ meta_to_printable(Meta, Config) ->
 format_to_binary(Format, Args, Config) ->
     FormatList = io_lib:scan_format(Format, Args),
     NewFormatList = reformat(FormatList, Config),
-    unicode:characters_to_binary(io_lib:build_text(NewFormatList), unicode).
+    % There is undocumented io_lib:build_text/2 usage. Options format can be changed to map in future.
+    % see https://github.com/erlang/otp/commit/29a347ffd408c68861a914db4efc75d8ea20a762 for details
+    BuildTextOptions = build_text_options(Config),
+    unicode:characters_to_binary(io_lib:build_text(NewFormatList, BuildTextOptions), unicode).
+
+build_text_options(Config) ->
+    case maps:get(chars_limit, Config, 1024) of
+        unlimited ->
+            [];
+        CharsLimit ->
+            [{chars_limit, CharsLimit}]
+    end.
 
 %% can't naively encode `File` or `Pid` as json as jsx see them as lists
 %% of integers
@@ -452,6 +466,22 @@ depth_reformat_test_() ->
         {"Limited very small W", ?_assertEqual(
             create_message(<<"[...]">>, <<"info">>, BinTime, #{}),
             parse_log_line(format(ComplexSmallWEvent, #{depth => 1}))
+        )}
+    ].
+
+
+-spec chars_limit_test_() -> _.
+chars_limit_test_() ->
+    {USec, BinTime} = get_time(),
+    Event = create_log_event(info, {"~p", [[1, 2, 3]]}, #{time => USec}),
+    [
+        {"Unlimited", ?_assertEqual(
+            create_message(<<"[1,2,3]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(Event, #{chars_limit => unlimited}))
+        )},
+        {"Limited", ?_assertEqual(
+            create_message(<<"[...]">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(Event, #{chars_limit => 1}))
         )}
     ].
 
