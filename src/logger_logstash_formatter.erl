@@ -21,7 +21,7 @@
     exclude_meta_fields => [atom()] | exclude_all,
     log_level_map => log_level_map(),
     message_redaction_regex_list => list(),
-    single_line_message => boolean()
+    single_line => boolean()
 }.
 
 -define(DEFAULT_EXCLUDES, [gl, domain]).
@@ -37,7 +37,7 @@ format(Event, Config) ->
     Severity  = get_severity(Event, Config),
     Message   = get_message(Event, Config),
     {RedactedMsg, RedactedMeta} = redact(Message, Meta, Config),
-    PrintableMeta = meta_to_printable(RedactedMeta),
+    PrintableMeta = meta_to_printable(RedactedMeta, Config),
     Formatted = create_message(RedactedMsg, Severity, TimeStamp, PrintableMeta),
     Encoded = jsx:encode(Formatted),
     [Encoded, <<"\n">>].
@@ -88,9 +88,7 @@ do_get_message({string, Message}, _Config) when is_binary(Message) ->
 do_get_message({report, _Report}, _Config) ->
     erlang:throw({formatter_error, unexpected_report}); % there shouldn't be any reports here
 do_get_message({Format, Args}, Config) ->
-    FormatList = io_lib:scan_format(Format, Args),
-    NewFormatList = reformat(FormatList, Config),
-    unicode:characters_to_binary(io_lib:build_text(NewFormatList), unicode).
+    format_to_binary(Format, Args, Config).
 
 -spec reformat(FormatList, config()) -> FormatList when
     FormatList :: [char() | io_lib:format_spec()].
@@ -120,29 +118,35 @@ create_message(Message, Severity, TimeStamp, Meta) ->
         }
     ).
 
-meta_to_printable(Meta) ->
-    maps:map(fun printable/2, Meta).
+meta_to_printable(Meta, Config) ->
+    maps:map(fun(K, V)  -> printable(K, V, Config) end, Meta).
+
+-spec format_to_binary(io:format(), [any()], config()) -> binary().
+format_to_binary(Format, Args, Config) ->
+    FormatList = io_lib:scan_format(Format, Args),
+    NewFormatList = reformat(FormatList, Config),
+    unicode:characters_to_binary(io_lib:build_text(NewFormatList), unicode).
 
 %% can't naively encode `File` or `Pid` as json as jsx see them as lists
 %% of integers
-printable(file, File) ->
+printable(file, File, _Config) ->
     unicode:characters_to_binary(File, unicode);
-printable(_, Pid) when is_pid(Pid) ->
+printable(_, Pid, _Config) when is_pid(Pid) ->
     pid_to_binary(Pid);
-printable(_, Port) when is_port(Port) ->
+printable(_, Port, _Config) when is_port(Port) ->
     unicode:characters_to_binary(erlang:port_to_list(Port), unicode);
-printable(_, {A, B, C} = V) when not is_integer(A); not is_integer(B); not is_integer(C) ->
+printable(_, {A, B, C} = V, Config) when not is_integer(A); not is_integer(B); not is_integer(C) ->
     % jsx:is_term treats all 3 length tuples as timestamps and fails if they are actually not
     % so we filter tuples, that are definetly not timestamps
-    unicode:characters_to_binary((io_lib:format("~w", [V])), unicode);
+    format_to_binary("~w", [V], Config);
 
 %% if a value is expressable in json use it directly, otherwise
 %% try to get a printable representation and express it as a json
 %% string
-printable(Key, Value) when is_atom(Key); is_binary(Key) ->
+printable(Key, Value, Config) when is_atom(Key); is_binary(Key) ->
     case jsx:is_term(Value) of
         true  -> Value;
-        false -> unicode:characters_to_binary(io_lib:format("~p", [Value]), unicode)
+        false -> format_to_binary("~p", [Value], Config)
     end.
 
 pid_to_binary(Pid) ->
