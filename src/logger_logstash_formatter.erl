@@ -215,18 +215,9 @@ redact_capture([Capture], Message) ->
     redact_capture(Capture, Message).
 
 compile_regex(Regex) ->
-    case application:get_env(?MODULE, message_redaction_compiled_regexes, #{}) of
-        #{Regex := CompiledRegex} ->
-            CompiledRegex;
-        #{} = CompiledRegexes ->
-            {ok, CompiledRegex} = re:compile(Regex, [unicode]),
-            ok = application:set_env(
-                ?MODULE,
-                message_redaction_compiled_regexes,
-                CompiledRegexes#{Regex => CompiledRegex}
-            ),
-            CompiledRegex
-    end.
+    %% TODO: Add caching over persistent terms
+    {ok, CompiledRegex} = re:compile(Regex, [unicode]),
+    CompiledRegex.
 
 traverse_and_redact(V, []) ->
     V;
