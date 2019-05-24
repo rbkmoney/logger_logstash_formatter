@@ -155,7 +155,8 @@ format_to_binary(Format, Args, Config) ->
     % There is undocumented io_lib:build_text/2 usage here. Options format can be changed to map in future.
     % see https://github.com/erlang/otp/commit/29a347ffd408c68861a914db4efc75d8ea20a762 for details
     BuildTextOptions = build_text_options(Config),
-    unicode:characters_to_binary(io_lib:build_text(NewFormatList, BuildTextOptions), unicode).
+%%    unicode:characters_to_binary(io_lib:build_text(NewFormatList, BuildTextOptions), unicode).
+    unicode:characters_to_binary(io_lib_format:build(NewFormatList, BuildTextOptions), unicode).
 
 build_text_options(Config) ->
     case maps:get(chars_limit, Config, 1024) of
@@ -512,5 +513,91 @@ various_format_types_test_() ->
         ]
         || F <- ValidIOFormats
     ].
+
+-spec parse_long_message_test() -> _.
+
+parse_long_message_test() ->
+    Msg =
+    #{level => info,
+        meta =>
+        #{gl => self(),parent_id => <<"72951">>,pid => self(),
+            'rpc.server' =>
+            #{deadline => <<"2019-05-24T14:30:42.026000Z">>,
+                event => 'invoke service handler',function => 'CreateClaim',
+                metadata =>
+                #{<<"user-identity.email">> => <<"merchant@its.demo">>,
+                    <<"user-identity.id">> =>
+                    <<"281220eb-a4ef-4d03-b666-bdec4b26c5f7">>,
+                    <<"user-identity.realm">> => <<"external">>,
+                    <<"user-identity.username">> => <<"Demo Merchant">>},
+                service => 'PartyManagement',type => call,
+                url => <<"http://dev.hellgate:8022/v1/processing/partymgmt">>},
+            scoper => ['rpc.server'],
+            span_id => <<"978666230229499904">>,time => 1558708212069696,
+            trace_id => <<"978666230225305600">>},
+        msg =>
+        {"[~s ~s ~s][server] handling ~s:~s(~p,~p,~p)",
+            [<<"978666230225305600">>,<<"72951">>,<<"978666230229499904">>,
+                'PartyManagement','CreateClaim',
+                {payproc_UserInfo,<<"281220eb-a4ef-4d03-b666-bdec4b26c5f7">>,
+                    {external_user,{payproc_ExternalUser}}},
+                <<"281220eb-a4ef-4d03-b666-bdec4b26c5f7">>,
+                [{contract_modification,
+                    {payproc_ContractModificationUnit,
+                        <<"create_invoice.1558708211886625">>,
+                        {creation,
+                            {payproc_ContractParams,undefined,undefined,
+                                {domain_PaymentInstitutionRef,2},
+                                {legal_entity,
+                                    {russian_legal_entity,
+                                        {domain_RussianLegalEntity,<<"testRegisteredName">>,
+                                            <<"1234567890123">>,<<"1234567890">>,
+                                            <<"testActualAddress">>,<<"testPostAddress">>,
+                                            <<"testRepresentativePosition">>,
+                                            <<"testRepresentativeFullName">>,
+                                            <<"testRepresentativeDocument">>,
+                                            {domain_RussianBankAccount,<<"12345678901234567890">>,
+                                                <<"testBankName">>,<<"12345678901234567890">>,
+                                                <<"123456789">>}}}}}}}},
+                    {contract_modification,
+                        {payproc_ContractModificationUnit,
+                            <<"create_invoice.1558708211886625">>,
+                            {payout_tool_modification,
+                                {payproc_PayoutToolModificationUnit,
+                                    <<"create_invoice.1558708211886625">>,
+                                    {creation,
+                                        {payproc_PayoutToolParams,
+                                            {domain_CurrencyRef,<<"RUB">>},
+                                            {russian_bank_account,
+                                                {domain_RussianBankAccount,<<"12345678901234567890">>,
+                                                    <<"testBankName">>,<<"12345678901234567890">>,
+                                                    <<"123456789">>}}}}}}}},
+                    {shop_modification,
+                        {payproc_ShopModificationUnit,
+                            <<"create_invoice.1558708211886625">>,
+                            {creation,
+                                {payproc_ShopParams,undefined,
+                                    {url,<<"http://all-time-favourite-spinners.com/">>},
+                                    {domain_ShopDetails,<<"OOOBlackMaster">>,
+                                        <<"Goods for education">>},
+                                    <<"create_invoice.1558708211886625">>,
+                                    <<"create_invoice.1558708211886625">>}}}},
+                    {shop_modification,
+                        {payproc_ShopModificationUnit,
+                            <<"create_invoice.1558708211886625">>,
+                            {category_modification,{domain_CategoryRef,2}}}},
+                    {shop_modification,
+                        {payproc_ShopModificationUnit,
+                            <<"create_invoice.1558708211886625">>,
+                            {shop_account_creation,
+                                {payproc_ShopAccountParams,
+                                    {domain_CurrencyRef,<<"RUB">>}}}}}
+                ]
+            ]
+        }
+    },
+
+    Config = #{chars_limit => 1025},
+    format(Msg, Config).
 
 -endif.
