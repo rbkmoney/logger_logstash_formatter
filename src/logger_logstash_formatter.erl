@@ -536,7 +536,7 @@ parse_long_message_test() ->
             span_id => <<"978666230229499904">>,time => 1558708212069696,
             trace_id => <<"978666230225305600">>},
         msg =>
-        {"[~s ~s ~s][server] handling ~s:~s(~p,~p,~p)",
+        {"[~s ~s ~s][server] handling ~s:~s (~p,~p,~p)",
             [<<"978666230225305600">>,<<"72951">>,<<"978666230229499904">>,
                 'PartyManagement','CreateClaim',
                 {payproc_UserInfo,<<"281220eb-a4ef-4d03-b666-bdec4b26c5f7">>,
@@ -597,7 +597,7 @@ parse_long_message_test() ->
         }
     },
 
-    Config = #{chars_limit => 1025},
-    format(Msg, Config).
+    Config = #{single_line => true},
+    format(Msg, Config). % Should just format without crash
 
 -endif.
