@@ -31,6 +31,7 @@
 -type depth() :: pos_integer() | unlimited.
 
 -define(DEFAULT_EXCLUDES, [gl, domain]).
+-define(MESSAGE_TRANSFORM_REGEXES_KEY, logger_logstash_formatter_message_transform_regexes).
 
 -spec format(logger:log_event(), logger:formatter_config()) -> unicode:chardata().
 
@@ -215,9 +216,17 @@ redact_capture([Capture], Message) ->
     redact_capture(Capture, Message).
 
 compile_regex(Regex) ->
-    %% TODO: Add caching over persistent terms
-    {ok, CompiledRegex} = re:compile(Regex, [unicode]),
-    CompiledRegex.
+    case persistent_term:get(?MESSAGE_TRANSFORM_REGEXES_KEY, #{}) of
+        #{Regex := CompiledRegex} ->
+            CompiledRegex;
+        #{} = CompiledRegexes ->
+            {ok, CompiledRegex} = re:compile(Regex, [unicode]),
+            persistent_term:put(
+                ?MESSAGE_TRANSFORM_REGEXES_KEY,
+                CompiledRegexes#{Regex => CompiledRegex}
+            ),
+            CompiledRegex
+    end.
 
 traverse_and_redact(V, []) ->
     V;
