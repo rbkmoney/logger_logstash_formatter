@@ -423,6 +423,16 @@ depth_reformat_test_() ->
     ComplexWEvent = create_log_event(info, {"~W", [[1, 2, 3], 100]}, #{time => USec}),
     ComplexSmallPEvent = create_log_event(info, {"~P", [[1, 2, 3], 2]}, #{time => USec}),
     ComplexSmallWEvent = create_log_event(info, {"~W", [[1, 2, 3], 2]}, #{time => USec}),
+    Report = [
+        {supervisor, well_some_sup},
+        {started, [
+            {id, ?MODULE},
+            {restart_type, permanent},
+            {pid, self()},
+            {shutdown, 5000},
+            {child_type, worker}
+        ]}
+    ],
     [
         {"Unlimited p", ?_assertEqual(
             create_message(<<"[1,2,3]">>, <<"info">>, BinTime, #{}),
@@ -479,6 +489,24 @@ depth_reformat_test_() ->
         {"Limited very small W", ?_assertEqual(
             create_message(<<"[...]">>, <<"info">>, BinTime, #{}),
             parse_log_line(format(ComplexSmallWEvent, #{depth => 1}))
+        )},
+        {"Limited report", ?_assertEqual(
+            create_message(
+                <<
+                    "supervisor: well_some_sup, started: [{id,", ?MODULE_STRING, "},",
+                    "{restart_type,permanent},{pid,...},{...}|...]"
+                >>,
+                <<"info">>,
+                BinTime,
+                #{}
+            ),
+            parse_log_line(format(
+                create_log_event(info, {report, Report}, #{time => USec}),
+                % NOTE
+                % Standard logger formatter never allow depth to go below 5
+                % > https://github.com/erlang/otp/blob/a4ff9f3/lib/kernel/src/logger_formatter.erl#L363
+                #{chars_limit => 120, depth => 5}
+            ))
         )}
     ].
 
@@ -491,13 +519,12 @@ chars_limit_test_() ->
         {supervisor, well_some_sup},
         {started, [
             {id, ?MODULE},
-            {pid, self()},
             {restart_type, permanent},
+            {pid, self()},
             {shutdown, 5000},
             {child_type, worker}
         ]}
     ],
-    PidBin = erlang:list_to_binary(erlang:pid_to_list(self())),
     [
         {"Unlimited", ?_assertEqual(
             create_message(<<"[1,2,3]">>, <<"info">>, BinTime, #{}),
@@ -512,24 +539,6 @@ chars_limit_test_() ->
             parse_log_line(format(
                 create_log_event(info, {report, Report}, #{time => USec}),
                 #{chars_limit => 40}
-            ))
-        )},
-        {"Limited depth report", ?_assertEqual(
-            create_message(
-                <<
-                    "supervisor: well_some_sup, started: [{id,",?MODULE_STRING,"},{pid,",PidBin/binary,"},",
-                    "{restart_type,...},{...}|...]"
-                >>,
-                <<"info">>,
-                BinTime,
-                #{}
-            ),
-            parse_log_line(format(
-                create_log_event(info, {report, Report}, #{time => USec}),
-                % NOTE
-                % Standard logger formatter never allow depth to go below 5
-                % > https://github.com/erlang/otp/blob/a4ff9f3/lib/kernel/src/logger_formatter.erl#L363
-                #{chars_limit => 120, depth => 5}
             ))
         )}
     ].
