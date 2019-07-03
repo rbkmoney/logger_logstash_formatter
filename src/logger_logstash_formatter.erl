@@ -20,12 +20,12 @@
 -type log_level_map() :: #{logger:level() => atom()}.
 
 -type config() :: #{
-    exclude_meta_fields => [atom()] | exclude_all,
-    log_level_map => log_level_map(),
-    message_redaction_regex_list => list(),
-    single_line => boolean(),
-    chars_limit => pos_integer() | unlimited,
-    depth => pos_integer() | unlimited
+    exclude_meta_fields           => [atom()] | exclude_all,
+    log_level_map                 => log_level_map(),
+    message_redaction_regex_list  => list(),
+    single_line                   => boolean(),
+    chars_limit                   => pos_integer() | unlimited,
+    depth                         => pos_integer() | unlimited
 }.
 -type chars_limit() :: pos_integer() | unlimited.
 -type depth() :: pos_integer() | unlimited.
@@ -36,8 +36,14 @@
 -spec format(logger:log_event(), logger:formatter_config()) -> unicode:chardata().
 
 format(#{msg := {report, _}} = Msg, Config) ->
-    Data = logger_formatter:format(Msg, #{template => [msg]}),
-    format(Msg#{msg => {string, Data}}, Config#{exclude_meta_fields => exclude_all});
+    FormatterConfig = #{
+        chars_limit  => get_chars_limit(Config),
+        depth        => get_depth(Config),
+        single_line  => get_single_line(Config),
+        template     => [msg]
+    },
+    Message = logger_formatter:format(Msg, FormatterConfig),
+    format(Msg#{msg => {"~ts", [Message]}}, Config#{exclude_meta_fields => exclude_all});
 
 format(Event, Config) ->
     {Meta, TimeStamp} = get_meta_and_timestamp(Event, Config),
@@ -100,9 +106,7 @@ do_get_message({Format, Args}, Config) ->
 -spec reformat(FormatList, config()) -> FormatList when
     FormatList :: [char() | io_lib:format_spec()].
 reformat(FormatList, Config) ->
-    IsSingleLine = maps:get(single_line, Config, true),
-    Depth = maps:get(depth, Config, 30),
-    try_reformat({IsSingleLine, Depth}, FormatList).
+    try_reformat({get_single_line(Config), get_depth(Config)}, FormatList).
 
 try_reformat({false, unlimited}, FormatList) ->
     FormatList;
@@ -159,12 +163,21 @@ format_to_binary(Format, Args, Config) ->
     unicode:characters_to_binary(io_lib:build_text(NewFormatList, BuildTextOptions), unicode).
 
 build_text_options(Config) ->
-    case maps:get(chars_limit, Config, 1024) of
+    case get_chars_limit(Config) of
         unlimited ->
             [];
         CharsLimit ->
             [{chars_limit, CharsLimit}]
     end.
+
+get_chars_limit(Config) ->
+    maps:get(chars_limit, Config, 1024).
+
+get_depth(Config) ->
+    maps:get(depth, Config, 30).
+
+get_single_line(Config) ->
+    maps:get(single_line, Config, true).
 
 %% can't naively encode `File` or `Pid` as json as jsx see them as lists
 %% of integers
@@ -410,6 +423,16 @@ depth_reformat_test_() ->
     ComplexWEvent = create_log_event(info, {"~W", [[1, 2, 3], 100]}, #{time => USec}),
     ComplexSmallPEvent = create_log_event(info, {"~P", [[1, 2, 3], 2]}, #{time => USec}),
     ComplexSmallWEvent = create_log_event(info, {"~W", [[1, 2, 3], 2]}, #{time => USec}),
+    Report = [
+        {supervisor, well_some_sup},
+        {started, [
+            {id, ?MODULE},
+            {restart_type, permanent},
+            {pid, self()},
+            {shutdown, 5000},
+            {child_type, worker}
+        ]}
+    ],
     [
         {"Unlimited p", ?_assertEqual(
             create_message(<<"[1,2,3]">>, <<"info">>, BinTime, #{}),
@@ -466,6 +489,24 @@ depth_reformat_test_() ->
         {"Limited very small W", ?_assertEqual(
             create_message(<<"[...]">>, <<"info">>, BinTime, #{}),
             parse_log_line(format(ComplexSmallWEvent, #{depth => 1}))
+        )},
+        {"Limited report", ?_assertEqual(
+            create_message(
+                <<
+                    "supervisor: well_some_sup, started: [{id,", ?MODULE_STRING, "},",
+                    "{restart_type,permanent},{pid,...},{...}|...]"
+                >>,
+                <<"info">>,
+                BinTime,
+                #{}
+            ),
+            parse_log_line(format(
+                create_log_event(info, {report, Report}, #{time => USec}),
+                % NOTE
+                % Standard logger formatter never allow depth to go below 5
+                % > https://github.com/erlang/otp/blob/a4ff9f3/lib/kernel/src/logger_formatter.erl#L363
+                #{chars_limit => 120, depth => 5}
+            ))
         )}
     ].
 
@@ -474,6 +515,16 @@ depth_reformat_test_() ->
 chars_limit_test_() ->
     {USec, BinTime} = get_time(),
     Event = create_log_event(info, {"~p", [[1, 2, 3]]}, #{time => USec}),
+    Report = [
+        {supervisor, well_some_sup},
+        {started, [
+            {id, ?MODULE},
+            {restart_type, permanent},
+            {pid, self()},
+            {shutdown, 5000},
+            {child_type, worker}
+        ]}
+    ],
     [
         {"Unlimited", ?_assertEqual(
             create_message(<<"[1,2,3]">>, <<"info">>, BinTime, #{}),
@@ -482,6 +533,13 @@ chars_limit_test_() ->
         {"Limited", ?_assertEqual(
             create_message(<<"[...]">>, <<"info">>, BinTime, #{}),
             parse_log_line(format(Event, #{chars_limit => 1}))
+        )},
+        {"Limited report", ?_assertEqual(
+            create_message(<<"supervisor: well_some_sup, started: ...">>, <<"info">>, BinTime, #{}),
+            parse_log_line(format(
+                create_log_event(info, {report, Report}, #{time => USec}),
+                #{chars_limit => 40}
+            ))
         )}
     ].
 
