@@ -5,8 +5,7 @@
     {applications, [
         kernel,
         stdlib,
-        jsx,
-        rfc3339
+        jsx
     ]},
     {env, []},
     {modules, []},

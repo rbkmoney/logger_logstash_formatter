@@ -60,9 +60,10 @@ get_severity(Event, Config) ->
     Level = maps:get(level, Event),
     maps:get(Level, LogLevelMap, Level).
 
+-spec format_time(integer()) -> binary().
 format_time(USec) ->
-    {ok, TS} = rfc3339:format(USec, microsecond),
-    TS.
+    Str = calendar:system_time_to_rfc3339(USec, [{unit, microsecond}, {offset, "Z"}]),
+    erlang:list_to_binary(Str).
 
 get_meta_and_timestamp(#{meta := Meta0}, Config) ->
     {Meta, TimeStamp} = case get_timestamp(Meta0) of
@@ -79,8 +80,7 @@ get_meta_and_timestamp(#{meta := Meta0}, Config) ->
 get_timestamp(Meta) ->
     case maps:get(time, Meta, undefined) of
         USec when is_integer(USec) ->
-            {ok, TimeStamp} = rfc3339:format(USec, microsecond),
-            TimeStamp;
+            format_time(USec);
         _ ->
             {error, no_time}
     end.
