@@ -571,4 +571,10 @@ various_format_types_test_() ->
         || F <- ValidIOFormats
     ].
 
+-spec timestamp_format_simple_test() -> _.
+timestamp_format_simple_test() ->
+    Event = create_log_event(info, {string, "time format"}, #{time => 1581958959142512}),
+    [<<"{\"@severity\":\"info\",\"@timestamp\":\"2020-02-17T17:02:39.142512Z\",\"message\":\"time format\"}">>,
+     <<"\n">>] = format(Event, #{}).
+
 -endif.
