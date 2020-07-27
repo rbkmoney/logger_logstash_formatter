@@ -4,28 +4,17 @@ build('logger_logstash_formatter', 'docker-host') {
   checkoutRepo()
   loadBuildUtils()
 
-  def pipeDefault
+  def pipeErlangLib
   runStage('load pipeline') {
     env.JENKINS_LIB = "build_utils/jenkins_lib"
-    pipeDefault = load("${env.JENKINS_LIB}/pipeDefault.groovy")
+    env.SH_TOOLS = "build_utils/sh"
+    pipeErlangLib = load("${env.JENKINS_LIB}/pipeErlangLib.groovy")
   }
 
-  pipeDefault() {
-    runStage('compile') {
-      sh 'make wc_compile'
-    }
-    runStage('lint') {
-      sh 'make wc_lint'
-    }
-    runStage('dialyzer') {
-      sh 'make wc_dialyze'
-    }
-    runStage('xref') {
-      sh 'make wc_xref'
-    }
-    runStage('test') {
-      sh "make wc_test"
-    }
-  }
+  // NOTE: Parallel pipeline almost always fails because of
+  // rebar3's design (it uses link for libraries, so
+  // parallel runs with different profiles brake each other)
+  // To prevent this use sequential pipleine here
+
+  pipeErlangLib.runPipe(false)
 }
-
