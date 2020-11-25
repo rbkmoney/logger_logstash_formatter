@@ -220,7 +220,8 @@ redact_one(Regex, Message) ->
     catch
         error:badarg ->
             % Do not crash on broken unicode string (OTP-16553)
-            Message
+            Len = byte_size(Message),
+            binary:copy(<<"*">>, Len)
     end.
 
 redact_capture({S, Len}, Message) ->
@@ -626,7 +627,7 @@ timestamp_format_simple_test() ->
 broken_unicode_test() ->
     Event = create_log_event(info, {string, <<208, 63>>}, #{time => 1581958959142512}),
     [
-        <<"{\"@severity\":\"info\",\"@timestamp\":\"2020-02-17T17:02:39.142512Z\",\"message\":\"ï¿½?\"}">>,
+        <<"{\"@severity\":\"info\",\"@timestamp\":\"2020-02-17T17:02:39.142512Z\",\"message\":\"**\"}">>,
         <<"\n">>
     ] = format(Event, #{message_redaction_regex_list => [".*"]}).
 
