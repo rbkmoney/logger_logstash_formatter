@@ -218,7 +218,7 @@ redact_one(Regex, Message) ->
         nomatch ->
             Message
     catch
-        _:badarg ->
+        error:badarg ->
             % Do not crash on broken unicode string (OTP-16553)
             Message
     end.
