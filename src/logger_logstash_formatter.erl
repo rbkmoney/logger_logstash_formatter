@@ -20,9 +20,7 @@
 -type log_level_map() :: #{logger:level() => atom()}.
 
 -type config() :: #{
-    exclude_meta_fields => [atom()] | exclude_all,
     log_level_map => log_level_map(),
-    message_redaction_regex_list => list(),
     single_line => boolean(),
     chars_limit => pos_integer() | unlimited,
     depth => pos_integer() | unlimited
@@ -30,9 +28,6 @@
 
 -type chars_limit() :: pos_integer() | unlimited.
 -type depth() :: pos_integer() | unlimited.
-
--define(DEFAULT_EXCLUDES, [gl, domain]).
--define(MESSAGE_TRANSFORM_REGEXES_KEY, logger_logstash_formatter_message_transform_regexes).
 
 -spec format(logger:log_event(), logger:formatter_config()) -> unicode:chardata().
 format(#{msg := {report, _}} = Msg, Config) ->
@@ -43,14 +38,13 @@ format(#{msg := {report, _}} = Msg, Config) ->
         template => [msg]
     },
     Message = logger_formatter:format(Msg, FormatterConfig),
-    format(Msg#{msg => {"~ts", [Message]}}, Config#{exclude_meta_fields => exclude_all});
-format(Event, Config) ->
-    {Meta, TimeStamp} = get_meta_and_timestamp(Event, Config),
+    format(Msg#{msg => {"~ts", [Message]}}, Config);
+format(Event = #{meta := Meta0}, Config) ->
+    {Meta, TimeStamp} = get_timestamp(Meta0),
     Severity = get_severity(Event, Config),
     Message = get_message(Event, Config),
-    {RedactedMsg, RedactedMeta} = redact(Message, Meta, Config),
-    PrintableMeta = meta_to_printable(RedactedMeta, Config),
-    Formatted = create_message(RedactedMsg, Severity, TimeStamp, PrintableMeta),
+    PrintableMeta = meta_to_printable(Meta, Config),
+    Formatted = create_message(Message, Severity, TimeStamp, PrintableMeta),
     Encoded = jsx:encode(Formatted),
     [Encoded, <<"\n">>].
 
@@ -64,32 +58,14 @@ format_time(USec) ->
     Str = calendar:system_time_to_rfc3339(USec, [{unit, microsecond}, {offset, "Z"}]),
     erlang:list_to_binary(Str).
 
-get_meta_and_timestamp(#{meta := Meta0}, Config) ->
-    {Meta, TimeStamp} =
-        case get_timestamp(Meta0) of
-            {error, _} ->
-                TS = format_time(os:system_time(microsecond)),
-                {Meta0, TS};
-            TS ->
-                % Succesfully got time from meta, can remove the field now
-                {maps:remove(time, Meta0), TS}
-        end,
-    {reduce_meta(Meta, Config), TimeStamp}.
-
--spec get_timestamp(logger:metadata()) -> binary() | {error, no_time}.
+-spec get_timestamp(logger:metadata()) -> binary().
 get_timestamp(Meta) ->
     case maps:get(time, Meta, undefined) of
         USec when is_integer(USec) ->
-            format_time(USec);
+            {maps:remove(time, Meta), format_time(USec)};
         _ ->
-            {error, no_time}
+            {Meta, format_time(os:system_time(microsecond))}
     end.
-
-reduce_meta(_, #{exclude_meta_fields := exclude_all}) ->
-    #{};
-reduce_meta(Meta, Config) ->
-    ExcludedFields = maps:get(exclude_meta_fields, Config, ?DEFAULT_EXCLUDES),
-    maps:without(ExcludedFields, Meta).
 
 get_message(#{msg := Message}, Config) ->
     do_get_message(Message, Config).
@@ -202,60 +178,6 @@ printable(Key, Value, Config) when is_atom(Key); is_binary(Key) ->
 pid_to_binary(Pid) ->
     unicode:characters_to_binary(pid_to_list(Pid), unicode).
 
-redact(Message, Meta, Config) ->
-    Regexes = maps:get(message_redaction_regex_list, Config, []),
-    {redact_all(Message, Regexes), traverse_and_redact(Meta, Regexes)}.
-
-redact_all(Message, []) ->
-    Message;
-redact_all(Message, Regexes) ->
-    lists:foldl(fun redact_one/2, Message, Regexes).
-
-redact_one(Regex, Message) ->
-    case re:run(Message, compile_regex(Regex), [global, {capture, first, index}]) of
-        {match, Captures} ->
-            lists:foldl(fun redact_capture/2, Message, Captures);
-        nomatch ->
-            Message
-    end.
-
-redact_capture({S, Len}, Message) ->
-    <<Pre:S/binary, _:Len/binary, Rest/binary>> = Message,
-    <<Pre/binary, (binary:copy(<<"*">>, Len))/binary, Rest/binary>>;
-redact_capture([Capture], Message) ->
-    redact_capture(Capture, Message).
-
-compile_regex(Regex) ->
-    case persistent_term:get(?MESSAGE_TRANSFORM_REGEXES_KEY, #{}) of
-        #{Regex := CompiledRegex} ->
-            CompiledRegex;
-        #{} = CompiledRegexes ->
-            {ok, CompiledRegex} = re:compile(Regex, [unicode]),
-            persistent_term:put(
-                ?MESSAGE_TRANSFORM_REGEXES_KEY,
-                CompiledRegexes#{Regex => CompiledRegex}
-            ),
-            CompiledRegex
-    end.
-
-traverse_and_redact(V, []) ->
-    V;
-traverse_and_redact(Map, Regexes) when is_map(Map) ->
-    F = fun(_, V) ->
-        traverse_and_redact(V, Regexes)
-    end,
-    maps:map(F, Map);
-traverse_and_redact(List, Regexes) when is_list(List) ->
-    F = fun(V) ->
-        traverse_and_redact(V, Regexes)
-    end,
-    lists:map(F, List);
-traverse_and_redact(Tuple, Regexes) when is_tuple(Tuple) ->
-    erlang:list_to_tuple(traverse_and_redact(erlang:tuple_to_list(Tuple), Regexes));
-traverse_and_redact(Binary, Regexes) when is_binary(Binary) ->
-    redact_all(Binary, Regexes);
-traverse_and_redact(Item, _) ->
-    Item.
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -303,44 +225,6 @@ basic_test_() ->
             )}
     ].
 
--spec redact_test_() -> _.
-redact_test_() ->
-    {USec, BinTime} = get_time(),
-    Event0 = create_log_event(info, {string, "CVC: 424"}, #{time => USec}),
-    Event1 = create_log_event(info, {"CVC: ~p", [424]}, #{time => USec}),
-    Event2 = create_log_event(info, {string, "No message"}, #{
-        time => USec,
-        cvc => <<"424">>,
-        cvc_list => [<<"434">>, <<"424">>],
-        cvc_map => #{my_code => <<"424">>},
-        deep_cvc => #{your_code => [<<"434">>, <<"424">>]},
-        cvc_tuple => {<<"424">>, gotcha}
-    }),
-    Expected = create_message(<<"CVC: ***">>, <<"info">>, BinTime, #{}),
-    [
-        {"String redact",
-            ?_assertEqual(
-                Expected,
-                parse_log_line(format(Event0, #{message_redaction_regex_list => [<<"424">>]}))
-            )},
-        {"Format redact",
-            ?_assertEqual(
-                Expected,
-                % equals Event0 format
-                parse_log_line(format(Event1, #{message_redaction_regex_list => [<<"424">>]}))
-            )},
-        {"Meta redact",
-            ?_assertEqual(
-                create_message(<<"No message">>, <<"info">>, BinTime, #{
-                    cvc => <<"***">>,
-                    cvc_list => [<<"434">>, <<"***">>],
-                    cvc_map => #{my_code => <<"***">>},
-                    deep_cvc => #{your_code => [<<"434">>, <<"***">>]},
-                    cvc_tuple => <<"{<<\"***\">>,gotcha}">>
-                }),
-                parse_log_line(format(Event2, #{message_redaction_regex_list => [<<"424">>]}))
-            )}
-    ].
 
 -spec excludes_test_() -> _.
 excludes_test_() ->
