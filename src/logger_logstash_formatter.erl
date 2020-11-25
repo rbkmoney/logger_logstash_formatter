@@ -624,7 +624,7 @@ timestamp_format_simple_test() ->
 
 -spec broken_unicode_test() -> _.
 broken_unicode_test() ->
-    Event = create_log_event(info, {string, <<208,63>>}, #{time => 1581958959142512}),
+    Event = create_log_event(info, {string, <<208, 63>>}, #{time => 1581958959142512}),
     [
         <<"{\"@severity\":\"info\",\"@timestamp\":\"2020-02-17T17:02:39.142512Z\",\"message\":\"ï¿½?\"}">>,
         <<"\n">>
