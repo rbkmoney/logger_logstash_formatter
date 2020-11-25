@@ -212,10 +212,14 @@ redact_all(Message, Regexes) ->
     lists:foldl(fun redact_one/2, Message, Regexes).
 
 redact_one(Regex, Message) ->
-    case re:run(Message, compile_regex(Regex), [global, {capture, first, index}]) of
+    try re:run(Message, compile_regex(Regex), [global, {capture, first, index}]) of
         {match, Captures} ->
             lists:foldl(fun redact_capture/2, Message, Captures);
         nomatch ->
+            Message
+    catch
+        _:badarg ->
+            % Do not crash on broken unicode string (OTP-16553)
             Message
     end.
 
@@ -617,5 +621,13 @@ timestamp_format_simple_test() ->
         <<"{\"@severity\":\"info\",\"@timestamp\":\"2020-02-17T17:02:39.142512Z\",\"message\":\"time format\"}">>,
         <<"\n">>
     ] = format(Event, #{}).
+
+-spec broken_unicode_test() -> _.
+broken_unicode_test() ->
+    Event = create_log_event(info, {string, <<208,63>>}, #{time => 1581958959142512}),
+    [
+        <<"{\"@severity\":\"info\",\"@timestamp\":\"2020-02-17T17:02:39.142512Z\",\"message\":\"ï¿½?\"}">>,
+        <<"\n">>
+    ] = format(Event, #{message_redaction_regex_list => [".*"]}).
 
 -endif.
