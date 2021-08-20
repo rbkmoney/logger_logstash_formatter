@@ -49,7 +49,7 @@ distclean:
 	rm -rfv _build
 
 lint:
-	elvis rock
+	$(REBAR) lint
 
 check_format:
 	$(REBAR) as test fmt -c
