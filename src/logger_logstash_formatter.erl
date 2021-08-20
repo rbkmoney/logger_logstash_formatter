@@ -612,7 +612,7 @@ various_format_types_test_() ->
                     )
                 )}
         ]
-        || F <- ValidIOFormats
+     || F <- ValidIOFormats
     ].
 
 -spec timestamp_format_simple_test() -> _.
